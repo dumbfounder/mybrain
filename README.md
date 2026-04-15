@@ -27,6 +27,10 @@ npm run dev
 
 Push to the `main` branch. The GitHub Actions workflow in `.github/workflows/deploy.yml` builds the app and publishes it to GitHub Pages.
 
+## Render
+
+This repo also includes a `render.yaml` Blueprint for deploying the app as a Render static site. The Render build should use the default root base path, so no extra environment variables are required.
+
 ## GitHub sync setup
 
 1. Create a GitHub personal access token with the `gist` scope.
