@@ -277,8 +277,7 @@ const writeEvent = (response, payload) => {
   response.write(`${JSON.stringify(payload)}\n`)
 }
 
-const handleCodexRun = async (request, response) => {
-  const body = await readBody(request)
+const createCodexRun = (body, onEvent) => {
   const cwd = typeof body.cwd === 'string' ? body.cwd : ''
   const prompt = typeof body.prompt === 'string' ? body.prompt : ''
   const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
@@ -291,22 +290,12 @@ const handleCodexRun = async (request, response) => {
       : 'workspace-write'
 
   if (!prompt.trim()) {
-    json(response, 400, { error: 'Prompt is required.' })
-    return
+    throw new Error('Prompt is required.')
   }
 
   if (!sessionId && !cwd) {
-    json(response, 400, { error: 'Project cwd is required for a new Codex session.' })
-    return
+    throw new Error('Project cwd is required for a new Codex session.')
   }
-
-  response.writeHead(200, {
-    'Content-Type': 'application/x-ndjson; charset=utf-8',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    ...corsHeaders(request),
-  })
-  writeEvent(response, { type: 'bridge', message: sessionId ? 'Resuming Codex thread.' : 'Starting Codex thread.' })
 
   const args = sessionId
     ? ['exec', 'resume', '--json']
@@ -329,79 +318,115 @@ const handleCodexRun = async (request, response) => {
   })
   let stdoutBuffer = ''
   let stderrBuffer = ''
+  const done = new Promise((resolve) => {
+    onEvent({ type: 'bridge', message: sessionId ? 'Resuming Codex thread.' : 'Starting Codex thread.' })
 
-  const handleLine = (line, stream) => {
-    const trimmed = line.trim()
+    const handleLine = (line, stream) => {
+      const trimmed = line.trim()
 
-    if (!trimmed) {
-      return
-    }
-
-    if (
-      stream === 'stderr' &&
-      (trimmed.includes('codex_core::plugins::manifest') ||
-        trimmed.includes('codex_core::shell_snapshot'))
-    ) {
-      return
-    }
-
-    if (!trimmed.startsWith('{')) {
-      writeEvent(response, { type: 'log', stream, text: trimmed })
-      return
-    }
-
-    try {
-      const event = JSON.parse(trimmed)
-      writeEvent(response, { type: 'codex-event', event })
-
-      if (event.type === 'thread.started' && event.thread_id) {
-        writeEvent(response, { type: 'thread', threadId: event.thread_id })
+      if (!trimmed) {
+        return
       }
 
-      if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
-        writeEvent(response, { type: 'assistant', text: event.item.text || '' })
+      if (
+        stream === 'stderr' &&
+        (trimmed.includes('codex_core::plugins::manifest') ||
+          trimmed.includes('codex_core::shell_snapshot'))
+      ) {
+        return
       }
 
-      if (event.type === 'turn.completed') {
-        writeEvent(response, { type: 'turn-completed', usage: event.usage })
+      if (!trimmed.startsWith('{')) {
+        onEvent({ type: 'log', stream, text: trimmed })
+        return
       }
-    } catch {
-      writeEvent(response, { type: 'log', stream, text: trimmed })
+
+      try {
+        const event = JSON.parse(trimmed)
+        onEvent({ type: 'codex-event', event })
+
+        if (event.type === 'thread.started' && event.thread_id) {
+          onEvent({ type: 'thread', threadId: event.thread_id })
+        }
+
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
+          onEvent({ type: 'assistant', text: event.item.text || '' })
+        }
+
+        if (event.type === 'turn.completed') {
+          onEvent({ type: 'turn-completed', usage: event.usage })
+        }
+      } catch {
+        onEvent({ type: 'log', stream, text: trimmed })
+      }
     }
-  }
 
-  child.stdout.on('data', (chunk) => {
-    stdoutBuffer += chunk.toString()
-    const lines = stdoutBuffer.split('\n')
-    stdoutBuffer = lines.pop() || ''
-    lines.forEach((line) => handleLine(line, 'stdout'))
-  })
+    child.stdout.on('data', (chunk) => {
+      stdoutBuffer += chunk.toString()
+      const lines = stdoutBuffer.split('\n')
+      stdoutBuffer = lines.pop() || ''
+      lines.forEach((line) => handleLine(line, 'stdout'))
+    })
 
-  child.stderr.on('data', (chunk) => {
-    stderrBuffer += chunk.toString()
-    const lines = stderrBuffer.split('\n')
-    stderrBuffer = lines.pop() || ''
-    lines.forEach((line) => handleLine(line, 'stderr'))
-  })
+    child.stderr.on('data', (chunk) => {
+      stderrBuffer += chunk.toString()
+      const lines = stderrBuffer.split('\n')
+      stderrBuffer = lines.pop() || ''
+      lines.forEach((line) => handleLine(line, 'stderr'))
+    })
 
-  child.on('error', (error) => {
-    writeEvent(response, { type: 'error', message: error.message })
-  })
+    child.on('error', (error) => {
+      onEvent({ type: 'error', message: error.message })
+    })
 
-  child.on('close', (code) => {
-    handleLine(stdoutBuffer, 'stdout')
-    handleLine(stderrBuffer, 'stderr')
-    writeEvent(response, { type: 'exit', code })
-    response.end()
-  })
-
-  response.on('close', () => {
-    if (!child.killed) {
-      child.kill('SIGTERM')
-    }
+    child.on('close', (code) => {
+      handleLine(stdoutBuffer, 'stdout')
+      handleLine(stderrBuffer, 'stderr')
+      onEvent({ type: 'exit', code })
+      resolve()
+    })
   })
 
   child.stdin.end(prompt)
+
+  return { child, done }
+}
+
+const handleCodexRun = async (request, response) => {
+  const body = await readBody(request)
+
+  try {
+    response.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      ...corsHeaders(request),
+    })
+
+    const runState = createCodexRun(body, (event) => writeEvent(response, event))
+
+    response.on('close', () => {
+      if (!runState.child.killed) {
+        runState.child.kill('SIGTERM')
+      }
+    })
+
+    await runState.done
+    response.end()
+  } catch (error) {
+    if (!response.headersSent) {
+      json(response, 400, {
+        error: error instanceof Error ? error.message : 'Codex run failed.',
+      })
+      return
+    }
+
+    writeEvent(response, {
+      type: 'error',
+      message: error instanceof Error ? error.message : 'Codex run failed.',
+    })
+    response.end()
+  }
 }
 
 const server = http.createServer(async (request, response) => {

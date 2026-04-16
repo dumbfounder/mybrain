@@ -57,6 +57,7 @@ const defaultBridgeUrl = () => {
 
 const defaultConsoleSettings = (): ConsoleSettings => ({
   bridge: {
+    mode: 'auto',
     url: defaultBridgeUrl(),
     token: '',
     sandbox: 'workspace-write',
@@ -253,7 +254,15 @@ function App() {
         '/api/health',
       )
       setBridgeHealth(health)
-      setBridgeStatus(`Connected to Codex at ${health.codexPath}.`)
+      const modeLabel = health.mode === 'relay' ? 'CodexRemote relay' : 'MyBrain local bridge'
+      const detail = health.mode === 'relay'
+        ? health.agent?.online
+          ? ` Agent online${health.agent.hostname ? ` on ${health.agent.hostname}` : ''}.`
+          : ' Waiting for the Mac relay agent.'
+        : health.codexPath
+          ? ` Codex at ${health.codexPath}.`
+          : ''
+      setBridgeStatus(`Connected to ${modeLabel}.${detail}`)
     } catch (error) {
       setBridgeHealth(null)
       setBridgeStatus(error instanceof Error ? error.message : 'Bridge check failed.')
@@ -408,6 +417,7 @@ function App() {
           cwd: selectedProject.localPath,
           prompt: sentPrompt,
           projectId: selectedProject.id,
+          projectName: selectedProject.name,
           sessionId: activeSessionId,
         },
         (streamEvent) => handleStreamEvent(selectedProject, assistantId, streamEvent),
@@ -504,6 +514,22 @@ function App() {
           </div>
           <div className="bridge-grid">
             <label>
+              <span>Bridge mode</span>
+              <select
+                value={bridge.mode}
+                onChange={(event) =>
+                  setBridge((current) => ({
+                    ...current,
+                    mode: event.target.value as BridgeConfig['mode'],
+                  }))
+                }
+              >
+                <option value="auto">Auto detect</option>
+                <option value="mybrain-local">MyBrain local</option>
+                <option value="codexremote-relay">CodexRemote relay</option>
+              </select>
+            </label>
+            <label>
               <span>Bridge URL</span>
               <input
                 value={bridge.url}
@@ -554,8 +580,11 @@ function App() {
           <p className="muted">{bridgeStatus}</p>
           {bridgeHealth ? (
             <p className="muted">
-              Base path: {bridgeHealth.basePath}. Render CLI:{' '}
-              {bridgeHealth.renderAvailable ? 'available' : 'not found'}.
+              {bridgeHealth.mode === 'relay'
+                ? `Relay agent: ${bridgeHealth.agent?.online ? 'online' : 'offline'}.`
+                : `Base path: ${bridgeHealth.basePath ?? 'unknown'}. Render CLI: ${
+                    bridgeHealth.renderAvailable ? 'available' : 'not found'
+                  }.`}
             </p>
           ) : null}
         </section>

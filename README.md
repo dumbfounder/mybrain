@@ -31,6 +31,15 @@ The bridge exposes:
 
 `POST /api/codex/run` streams newline-delimited JSON while `codex exec --json` runs, so the mobile chat sees Codex status and final responses without waiting for a full request to finish.
 
+## CodexRemote Relay
+
+For a phone that cannot reach the Mac directly, MyBrain can also use a CodexRemote relay service. In the Bridge panel, choose Auto Detect or CodexRemote Relay, set the relay URL, and use the relay token. MyBrain will queue work through:
+
+- `POST /api/command`
+- `GET /api/events/<request-id>`
+
+CodexRemote stays API-only in this setup. It does not render a separate web app; it only relays commands between MyBrain and the Mac-side CodexRemote agent.
+
 ## Project Snapshot
 
 You can still generate a snapshot without running the bridge:
@@ -52,4 +61,4 @@ npm run dev
 
 Render serves the static app from `dist`. GitHub Pages still builds with `VITE_BASE_PATH=/mybrain/`.
 
-The static deployment is useful for the mobile shell, but real Codex control requires the local bridge or a tunnel to it.
+The static deployment is useful for the mobile shell, but real Codex control requires the local bridge, a private tunnel to it, or the CodexRemote relay.

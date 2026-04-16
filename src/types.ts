@@ -161,6 +161,7 @@ export type ConsoleMessage = {
 }
 
 export type BridgeConfig = {
+  mode: 'auto' | 'mybrain-local' | 'codexremote-relay'
   url: string
   token: string
   sandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
