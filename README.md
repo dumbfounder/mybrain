@@ -1,20 +1,21 @@
 # MyBrain
 
-MyBrain is a mobile-first tracker for AI work. Each thread stores:
+MyBrain is a private mobile-first tracker for Codex projects. Each project stores:
 
-- what you are trying to get done
-- the last prompt you sent
-- what that prompt produced
-- the next prompt you want ready
-- notes, tags, status, and priority
+- status, stage, priority, current focus, and next action
+- repo URL, production URL, local path, and notes
+- deploy history
+- feature history
+- AI prompt history
 
 ## What it does
 
 - local-first storage in the browser
 - optional cross-device sync through a private GitHub gist
 - ChatGPT export import from a `.zip` export or `conversations.json`
-- installable PWA with a phone share target so you can share text or links into it
-- GitHub Pages deployment
+- local project snapshot import for Codex folders, git state, and Render services
+- installable PWA with a phone share target
+- GitHub Pages and Render deployment
 
 ## Local development
 
@@ -22,6 +23,16 @@ MyBrain is a mobile-first tracker for AI work. Each thread stores:
 npm install --cache .npm-cache
 npm run dev
 ```
+
+## Project snapshot import
+
+Generate a JSON snapshot of your local Codex project folders:
+
+```bash
+npm run snapshot:projects -- "/Users/dumbfounder/Dropbox/codex apps" > mybrain-projects.json
+```
+
+Then import that file in the app. The generator pulls local path, git remote, current branch, dirty state, last commit info, and matching Render services when the Render CLI is available and logged in.
 
 ## Deploy
 
@@ -47,6 +58,6 @@ MyBrain supports:
 
 - importing a ChatGPT export
 - saving ChatGPT links or copied text via the phone share sheet
-- manually capturing prompts and outcomes
+- manually capturing prompts and outcomes against a project
 
 It does not include automatic live ChatGPT history access.

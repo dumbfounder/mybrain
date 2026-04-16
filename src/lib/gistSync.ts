@@ -1,12 +1,20 @@
-import type { SessionEntry, WorkItem } from '../types'
-import { nowIso, sortItems, sortSessions } from './utils'
+import type { AiSessionEntry, DeployEntry, FeatureEntry, Project } from '../types'
+import { normalizeStoredState } from './migrations'
+import {
+  normalizeRepoUrl,
+  nowIso,
+  sortDeploys,
+  sortFeatures,
+  sortProjects,
+  sortSessions,
+} from './utils'
 
 const GIST_FILENAME = 'mybrain-data.json'
 
 type SyncDocument = {
-  version: 1
+  version: 2
   exportedAt: string
-  items: WorkItem[]
+  projects: Project[]
 }
 
 const buildHeaders = (token: string) => ({
@@ -21,38 +29,55 @@ const safeDate = (value?: string) => new Date(value ?? 0).getTime()
 const pickLatest = <T extends { updatedAt: string }>(left: T, right: T) =>
   safeDate(left.updatedAt) >= safeDate(right.updatedAt) ? left : right
 
-const mergeSessions = (
-  primarySessions: SessionEntry[],
-  secondarySessions: SessionEntry[],
+const preferText = (primary: string, fallback: string) =>
+  primary.trim().length > 0 ? primary : fallback
+
+const mergeCollectionById = <T extends { id: string; updatedAt: string }>(
+  primary: T[],
+  secondary: T[],
+  sort: (values: T[]) => T[],
 ) => {
-  const merged = new Map<string, SessionEntry>()
+  const merged = new Map<string, T>()
 
-  for (const session of secondarySessions) {
-    merged.set(session.id, session)
+  for (const entry of secondary) {
+    merged.set(entry.id, entry)
   }
 
-  for (const session of primarySessions) {
-    const existing = merged.get(session.id)
-    merged.set(session.id, existing ? pickLatest(session, existing) : session)
+  for (const entry of primary) {
+    const existing = merged.get(entry.id)
+    merged.set(entry.id, existing ? pickLatest(entry, existing) : entry)
   }
 
-  return sortSessions(Array.from(merged.values()))
+  return sort(Array.from(merged.values()))
 }
 
-const mergeOneItem = (primary: WorkItem, secondary: WorkItem): WorkItem => {
+const mergeSessions = (primary: AiSessionEntry[], secondary: AiSessionEntry[]) =>
+  mergeCollectionById(primary, secondary, sortSessions)
+
+const mergeFeatures = (primary: FeatureEntry[], secondary: FeatureEntry[]) =>
+  mergeCollectionById(primary, secondary, sortFeatures)
+
+const mergeDeploys = (primary: DeployEntry[], secondary: DeployEntry[]) =>
+  mergeCollectionById(primary, secondary, sortDeploys)
+
+const mergeOneProject = (primary: Project, secondary: Project): Project => {
   const latest = pickLatest(primary, secondary)
-  const fallback = latest.id === primary.id && latest.updatedAt === primary.updatedAt
-    ? secondary
-    : primary
-  const sessions = mergeSessions(primary.sessions, secondary.sessions)
+  const fallback =
+    latest.id === primary.id && latest.updatedAt === primary.updatedAt
+      ? secondary
+      : primary
 
   return {
     ...fallback,
     ...latest,
-    title: latest.title || fallback.title,
-    objective: latest.objective || fallback.objective,
-    tool: latest.tool || fallback.tool,
-    notes: latest.notes || fallback.notes,
+    name: preferText(latest.name, fallback.name),
+    summary: preferText(latest.summary, fallback.summary),
+    notes: preferText(latest.notes, fallback.notes),
+    currentFocus: preferText(latest.currentFocus, fallback.currentFocus),
+    nextAction: preferText(latest.nextAction, fallback.nextAction),
+    repoUrl: normalizeRepoUrl(preferText(latest.repoUrl, fallback.repoUrl)),
+    productionUrl: preferText(latest.productionUrl, fallback.productionUrl),
+    localPath: preferText(latest.localPath, fallback.localPath),
     tags: Array.from(new Set([...fallback.tags, ...latest.tags])),
     createdAt:
       safeDate(primary.createdAt) <= safeDate(secondary.createdAt)
@@ -66,34 +91,43 @@ const mergeOneItem = (primary: WorkItem, secondary: WorkItem): WorkItem => {
       safeDate(primary.lastTouchedAt) >= safeDate(secondary.lastTouchedAt)
         ? primary.lastTouchedAt
         : secondary.lastTouchedAt,
-    sessions,
+    sessions: mergeSessions(primary.sessions, secondary.sessions),
+    features: mergeFeatures(primary.features, secondary.features),
+    deploys: mergeDeploys(primary.deploys, secondary.deploys),
   }
 }
 
-export const mergeItemCollections = (
-  primaryItems: WorkItem[],
-  secondaryItems: WorkItem[],
+export const mergeProjectCollections = (
+  primaryProjects: Project[],
+  secondaryProjects: Project[],
 ) => {
-  const merged = new Map<string, WorkItem>()
+  const merged = new Map<string, Project>()
 
-  for (const item of secondaryItems) {
-    merged.set(item.id, item)
+  for (const project of secondaryProjects) {
+    merged.set(project.id, {
+      ...project,
+      repoUrl: normalizeRepoUrl(project.repoUrl),
+    })
   }
 
-  for (const item of primaryItems) {
-    const existing = merged.get(item.id)
-    merged.set(item.id, existing ? mergeOneItem(item, existing) : item)
+  for (const project of primaryProjects) {
+    const normalized = {
+      ...project,
+      repoUrl: normalizeRepoUrl(project.repoUrl),
+    }
+    const existing = merged.get(normalized.id)
+    merged.set(normalized.id, existing ? mergeOneProject(normalized, existing) : normalized)
   }
 
-  return sortItems(Array.from(merged.values()))
+  return sortProjects(Array.from(merged.values()))
 }
 
-const encodeDocument = (items: WorkItem[]) =>
+const encodeDocument = (projects: Project[]) =>
   JSON.stringify(
     {
-      version: 1,
+      version: 2,
       exportedAt: nowIso(),
-      items: sortItems(items),
+      projects: sortProjects(projects),
     } satisfies SyncDocument,
     null,
     2,
@@ -101,19 +135,20 @@ const encodeDocument = (items: WorkItem[]) =>
 
 const decodeDocument = (raw?: string) => {
   if (!raw) {
-    return { version: 1, exportedAt: nowIso(), items: [] } satisfies SyncDocument
+    return { version: 2, exportedAt: nowIso(), projects: [] } satisfies SyncDocument
   }
 
-  const parsed = JSON.parse(raw) as SyncDocument
+  const parsed = JSON.parse(raw)
+  const state = normalizeStoredState(parsed)
 
   return {
-    version: 1,
+    version: 2,
     exportedAt: parsed.exportedAt ?? nowIso(),
-    items: Array.isArray(parsed.items) ? parsed.items : [],
+    projects: state.projects,
   } satisfies SyncDocument
 }
 
-export const createSecretSyncGist = async (token: string, items: WorkItem[]) => {
+export const createSecretSyncGist = async (token: string, projects: Project[]) => {
   const response = await fetch('https://api.github.com/gists', {
     method: 'POST',
     headers: buildHeaders(token),
@@ -122,7 +157,7 @@ export const createSecretSyncGist = async (token: string, items: WorkItem[]) => 
       public: false,
       files: {
         [GIST_FILENAME]: {
-          content: encodeDocument(items),
+          content: encodeDocument(projects),
         },
       },
     }),
@@ -163,7 +198,7 @@ export const fetchSyncDocument = async (token: string, gistId: string) => {
 export const saveSyncDocument = async (
   token: string,
   gistId: string,
-  items: WorkItem[],
+  projects: Project[],
 ) => {
   const response = await fetch(`https://api.github.com/gists/${gistId}`, {
     method: 'PATCH',
@@ -171,7 +206,7 @@ export const saveSyncDocument = async (
     body: JSON.stringify({
       files: {
         [GIST_FILENAME]: {
-          content: encodeDocument(items),
+          content: encodeDocument(projects),
         },
       },
     }),
@@ -191,14 +226,14 @@ export const saveSyncDocument = async (
 export const syncWithRemote = async (
   token: string,
   gistId: string,
-  localItems: WorkItem[],
+  localProjects: Project[],
 ) => {
   const remote = await fetchSyncDocument(token, gistId)
-  const mergedItems = mergeItemCollections(localItems, remote.document.items)
-  const saved = await saveSyncDocument(token, gistId, mergedItems)
+  const mergedProjects = mergeProjectCollections(localProjects, remote.document.projects)
+  const saved = await saveSyncDocument(token, gistId, mergedProjects)
 
   return {
-    items: mergedItems,
+    projects: mergedProjects,
     syncedAt: saved.syncedAt,
   }
 }

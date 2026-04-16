@@ -1,4 +1,5 @@
 import type { StoredState } from '../types'
+import { normalizeStoredState } from './migrations'
 
 const STORAGE_KEY = 'mybrain-state-v1'
 
@@ -7,18 +8,12 @@ export const loadState = (): StoredState => {
     const raw = window.localStorage.getItem(STORAGE_KEY)
 
     if (!raw) {
-      return { items: [] }
+      return { projects: [] }
     }
 
-    const parsed = JSON.parse(raw) as StoredState
-
-    if (!Array.isArray(parsed.items)) {
-      return { items: [] }
-    }
-
-    return parsed
+    return normalizeStoredState(JSON.parse(raw))
   } catch {
-    return { items: [] }
+    return { projects: [] }
   }
 }
 

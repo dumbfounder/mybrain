@@ -8,68 +8,185 @@ import {
 } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
-import { SessionList } from './components/SessionList'
-import { WorkItemCard } from './components/WorkItemCard'
+import { AiSessionList } from './components/AiSessionList'
+import { DeployList } from './components/DeployList'
+import { FeatureList } from './components/FeatureList'
+import { ProjectCard } from './components/ProjectCard'
 import { importChatGptFile } from './lib/chatgptImport'
-import {
-  createSecretSyncGist,
-  mergeItemCollections,
-  syncWithRemote,
-} from './lib/gistSync'
+import { createSecretSyncGist, mergeProjectCollections, syncWithRemote } from './lib/gistSync'
+import { importProjectSnapshotFile } from './lib/projectSnapshotImport'
 import { loadState, saveState } from './lib/storage'
 import {
-  countStaleItems,
+  countLiveProjects,
+  countShippedFeatures,
+  countStaleProjects,
+  DEPLOY_ENV_OPTIONS,
+  DEPLOY_PROVIDER_OPTIONS,
+  DEPLOY_STATUS_OPTIONS,
   excerpt,
+  FEATURE_STATUS_OPTIONS,
   formatDateTime,
   formatRelative,
   generateId,
+  getLatestDeploy,
   getLatestSession,
   hasText,
+  hostFromUrl,
+  normalizeRepoUrl,
   normalizeTags,
   nowIso,
   PRIORITY_OPTIONS,
-  sortItems,
+  PROJECT_STAGE_OPTIONS,
+  PROJECT_STATUS_OPTIONS,
+  sortDeploys,
+  sortFeatures,
+  sortProjects,
   sortSessions,
-  STATUS_OPTIONS,
   TOOL_OPTIONS,
 } from './lib/utils'
-import type { Priority, SessionEntry, SyncConfig, ToolName, WorkItem, WorkStatus } from './types'
+import type {
+  AiSessionEntry,
+  DeployEntry,
+  DeployEnvironment,
+  DeployProvider,
+  DeployStatus,
+  FeatureEntry,
+  FeatureStatus,
+  Priority,
+  Project,
+  ProjectStage,
+  ProjectStatus,
+  SyncConfig,
+  ToolName,
+} from './types'
 
-type CaptureDraft = {
-  title: string
-  objective: string
-  status: WorkStatus
+type NewProjectDraft = {
+  name: string
+  summary: string
+  status: ProjectStatus
+  stage: ProjectStage
   priority: Priority
+  tool: ToolName
+  currentFocus: string
+  nextAction: string
+  repoUrl: string
+  productionUrl: string
+  localPath: string
+  tags: string
+  notes: string
+  prompt: string
+  result: string
+  nextPrompt: string
+  link: string
+}
+
+type ProjectEditDraft = {
+  name: string
+  summary: string
+  status: ProjectStatus
+  stage: ProjectStage
+  priority: Priority
+  tool: ToolName
+  currentFocus: string
+  nextAction: string
+  repoUrl: string
+  productionUrl: string
+  localPath: string
+  notes: string
+}
+
+type SessionDraft = {
   tool: ToolName
   prompt: string
   result: string
   nextPrompt: string
-  notes: string
-  tags: string
   link: string
 }
 
-const emptyCaptureDraft = (): CaptureDraft => ({
-  title: '',
-  objective: '',
+type FeatureDraft = {
+  title: string
+  status: FeatureStatus
+  summary: string
+  notes: string
+}
+
+type DeployDraft = {
+  provider: DeployProvider
+  environment: DeployEnvironment
+  status: DeployStatus
+  url: string
+  commit: string
+  notes: string
+}
+
+const emptyNewProjectDraft = (): NewProjectDraft => ({
+  name: '',
+  summary: '',
   status: 'active',
+  stage: 'building',
   priority: 'now',
-  tool: 'ChatGPT',
+  tool: 'Codex',
+  currentFocus: '',
+  nextAction: '',
+  repoUrl: '',
+  productionUrl: '',
+  localPath: '',
+  tags: '',
+  notes: '',
   prompt: '',
   result: '',
   nextPrompt: '',
-  notes: '',
-  tags: '',
   link: '',
 })
 
-const cloneItem = (item: WorkItem) => ({
-  ...item,
-  tags: [...item.tags],
-  sessions: [...item.sessions],
+const emptySessionDraft = (tool: ToolName = 'Codex'): SessionDraft => ({
+  tool,
+  prompt: '',
+  result: '',
+  nextPrompt: '',
+  link: '',
 })
 
-const buildSession = (draft: CaptureDraft, source: SessionEntry['source']): SessionEntry => {
+const emptyFeatureDraft = (): FeatureDraft => ({
+  title: '',
+  status: 'building',
+  summary: '',
+  notes: '',
+})
+
+const emptyDeployDraft = (): DeployDraft => ({
+  provider: 'Render',
+  environment: 'production',
+  status: 'live',
+  url: '',
+  commit: '',
+  notes: '',
+})
+
+const cloneProject = (project: Project) => ({
+  ...project,
+  tags: [...project.tags],
+  sessions: [...project.sessions],
+  features: [...project.features],
+  deploys: [...project.deploys],
+})
+
+const projectToEditDraft = (project: Project): ProjectEditDraft => ({
+  name: project.name,
+  summary: project.summary,
+  status: project.status,
+  stage: project.stage,
+  priority: project.priority,
+  tool: project.tool,
+  currentFocus: project.currentFocus,
+  nextAction: project.nextAction,
+  repoUrl: project.repoUrl,
+  productionUrl: project.productionUrl,
+  localPath: project.localPath,
+  notes: project.notes,
+})
+
+const buildSession = (draft: SessionDraft, source: AiSessionEntry['source']) => {
   const timestamp = nowIso()
 
   return {
@@ -82,98 +199,142 @@ const buildSession = (draft: CaptureDraft, source: SessionEntry['source']): Sess
     createdAt: timestamp,
     updatedAt: timestamp,
     source,
-  }
+  } satisfies AiSessionEntry
 }
 
-const deriveTitle = (draft: CaptureDraft) =>
-  draft.title.trim() ||
-  excerpt(draft.prompt, 56) ||
-  excerpt(draft.objective, 56) ||
-  `AI thread ${new Date().toLocaleDateString()}`
+const buildFeature = (draft: FeatureDraft) => {
+  const timestamp = nowIso()
 
-const copyText = async (value: string) => {
-  await navigator.clipboard.writeText(value)
+  return {
+    id: generateId(),
+    title: draft.title.trim(),
+    status: draft.status,
+    summary: draft.summary.trim(),
+    notes: draft.notes.trim(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    shippedAt: draft.status === 'shipped' ? timestamp : undefined,
+  } satisfies FeatureEntry
+}
+
+const buildDeploy = (draft: DeployDraft) => {
+  const timestamp = nowIso()
+
+  return {
+    id: generateId(),
+    provider: draft.provider,
+    environment: draft.environment,
+    status: draft.status,
+    url: draft.url.trim(),
+    commit: draft.commit.trim(),
+    notes: draft.notes.trim(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  } satisfies DeployEntry
+}
+
+const projectMatches = (project: Project, query: string) => {
+  const haystack = [
+    project.name,
+    project.summary,
+    project.currentFocus,
+    project.nextAction,
+    project.notes,
+    project.repoUrl,
+    project.productionUrl,
+    project.localPath,
+    project.tags.join(' '),
+    project.features.map((feature) => `${feature.title} ${feature.summary}`).join(' '),
+    project.deploys.map((deploy) => `${deploy.provider} ${deploy.url} ${deploy.notes}`).join(' '),
+    project.sessions.map((session) => `${session.prompt} ${session.result}`).join(' '),
+  ]
+    .join(' ')
+    .toLowerCase()
+
+  return haystack.includes(query.toLowerCase())
 }
 
 function App() {
   const initialState = loadState()
-  const [items, setItems] = useState<WorkItem[]>(sortItems(initialState.items))
+  const [projects, setProjects] = useState<Project[]>(sortProjects(initialState.projects))
   const [sync, setSync] = useState<SyncConfig | undefined>(initialState.sync)
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
-  const [statusFilter, setStatusFilter] = useState<WorkStatus | 'all'>('all')
-  const [captureMode, setCaptureMode] = useState<'new' | 'existing'>('new')
-  const [captureTargetId, setCaptureTargetId] = useState(initialState.items[0]?.id ?? '')
-  const [captureDraft, setCaptureDraft] = useState(emptyCaptureDraft)
-  const [selectedId, setSelectedId] = useState(initialState.items[0]?.id ?? '')
-  const [focusDraft, setFocusDraft] = useState<WorkItem | null>(
-    initialState.items[0] ? cloneItem(sortItems(initialState.items)[0]) : null,
+  const [statusFilter, setStatusFilter] = useState<ProjectStatus | 'all'>('all')
+  const [stageFilter, setStageFilter] = useState<ProjectStage | 'all'>('all')
+  const [newProjectDraft, setNewProjectDraft] = useState(emptyNewProjectDraft)
+  const [selectedProjectId, setSelectedProjectId] = useState(initialState.projects[0]?.id ?? '')
+  const [projectDraft, setProjectDraft] = useState<ProjectEditDraft | null>(
+    initialState.projects[0] ? projectToEditDraft(sortProjects(initialState.projects)[0]) : null,
   )
-  const [focusTags, setFocusTags] = useState(
-    initialState.items[0]?.tags.join(', ') ?? '',
-  )
+  const [projectTags, setProjectTags] = useState(initialState.projects[0]?.tags.join(', ') ?? '')
+  const [sessionDraft, setSessionDraft] = useState(emptySessionDraft())
+  const [featureDraft, setFeatureDraft] = useState(emptyFeatureDraft)
+  const [deployDraft, setDeployDraft] = useState(emptyDeployDraft)
   const [syncTokenInput, setSyncTokenInput] = useState(initialState.sync?.token ?? '')
   const [syncGistInput, setSyncGistInput] = useState(initialState.sync?.gistId ?? '')
   const [syncMessage, setSyncMessage] = useState(
     initialState.sync?.lastSyncStatus ?? 'Local-first mode. Add GitHub sync when you are ready.',
   )
   const [syncBusy, setSyncBusy] = useState(false)
-  const [importMessage, setImportMessage] = useState(
-    'Import a ChatGPT export zip or conversations.json when you want to seed the tracker.',
+  const [chatGptImportMessage, setChatGptImportMessage] = useState(
+    'Import a ChatGPT export zip or conversations.json to turn research chats into tracked projects.',
+  )
+  const [snapshotImportMessage, setSnapshotImportMessage] = useState(
+    'Import a local Codex project snapshot JSON to seed your board with repos, commit state, and deploy URLs.',
   )
   const [importBusy, setImportBusy] = useState(false)
   const [toast, setToast] = useState('')
   const [shareBanner, setShareBanner] = useState('')
-  const lastSyncedSignature = useRef(JSON.stringify(sortItems(initialState.items)))
+  const lastSyncedSignature = useRef(JSON.stringify(sortProjects(initialState.projects)))
 
-  const filteredItems = sortItems(
-    items.filter((item) => {
-      const haystack = [
-        item.title,
-        item.objective,
-        item.notes,
-        item.tags.join(' '),
-        getLatestSession(item)?.prompt ?? '',
-        getLatestSession(item)?.result ?? '',
-      ]
-        .join(' ')
-        .toLowerCase()
-
-      const matchesStatus = statusFilter === 'all' || item.status === statusFilter
+  const filteredProjects = sortProjects(
+    projects.filter((project) => {
+      const matchesStatus = statusFilter === 'all' || project.status === statusFilter
+      const matchesStage = stageFilter === 'all' || project.stage === stageFilter
       const matchesSearch =
-        deferredSearch.trim().length === 0 ||
-        haystack.includes(deferredSearch.trim().toLowerCase())
+        deferredSearch.trim().length === 0 || projectMatches(project, deferredSearch.trim())
 
-      return matchesStatus && matchesSearch
+      return matchesStatus && matchesStage && matchesSearch
     }),
   )
 
-  const selectedItem =
-    items.find((item) => item.id === selectedId) ?? filteredItems[0] ?? null
-  const latestSelectedSession = selectedItem ? getLatestSession(selectedItem) : null
-  const itemSignature = JSON.stringify(sortItems(items))
+  const selectedProject =
+    projects.find((project) => project.id === selectedProjectId) ?? filteredProjects[0] ?? null
+  const latestSelectedSession = selectedProject ? getLatestSession(selectedProject) : null
+  const latestSelectedDeploy = selectedProject ? getLatestDeploy(selectedProject) : null
+  const projectSignature = JSON.stringify(sortProjects(projects))
 
   useEffect(() => {
-    saveState({ items, sync })
-  }, [items, sync])
+    saveState({ projects, sync })
+  }, [projects, sync])
 
   useEffect(() => {
     const nextSelected =
-      items.find((item) => item.id === selectedId) ?? filteredItems[0] ?? null
+      projects.find((project) => project.id === selectedProjectId) ?? filteredProjects[0] ?? null
 
     if (!nextSelected) {
-      setFocusDraft(null)
-      setFocusTags('')
+      setProjectDraft(null)
+      setProjectTags('')
       return
     }
 
-    if (nextSelected.id !== selectedId) {
-      setSelectedId(nextSelected.id)
+    if (nextSelected.id !== selectedProjectId) {
+      setSelectedProjectId(nextSelected.id)
     }
 
-    setFocusDraft(cloneItem(nextSelected))
-    setFocusTags(nextSelected.tags.join(', '))
-  }, [filteredItems, items, selectedId])
+    setProjectDraft(projectToEditDraft(cloneProject(nextSelected)))
+    setProjectTags(nextSelected.tags.join(', '))
+    setSessionDraft(emptySessionDraft(nextSelected.tool))
+    setFeatureDraft(emptyFeatureDraft())
+    setDeployDraft((current) => ({
+      ...emptyDeployDraft(),
+      provider: current.provider,
+      environment: current.environment,
+      status: current.status,
+      url: nextSelected.productionUrl || current.url,
+    }))
+  }, [filteredProjects, projects, selectedProjectId])
 
   useEffect(() => {
     if (!toast) {
@@ -194,18 +355,17 @@ function App() {
     const title = params.get('title') ?? ''
     const text = params.get('text') ?? ''
     const url = params.get('url') ?? ''
-    const host = url ? new URL(url).hostname.replace(/^www\./, '') : ''
+    const host = url ? hostFromUrl(url) : ''
 
-    setCaptureMode('new')
-    setCaptureDraft((current) => ({
+    setNewProjectDraft((current) => ({
       ...current,
-      title: current.title || title || host,
+      name: current.name || title || host,
       tool: current.tool === 'Other' ? 'ChatGPT' : current.tool,
       prompt: current.prompt || text,
       link: current.link || url,
       notes: current.notes || (url ? `Shared into MyBrain from ${host}.` : current.notes),
     }))
-    setShareBanner('Shared content is ready in Quick Capture. Save it before you forget why it mattered.')
+    setShareBanner('Shared content is ready in New Project. Save it before the context evaporates.')
 
     window.history.replaceState({}, document.title, window.location.pathname)
   }, [])
@@ -219,7 +379,7 @@ function App() {
       return undefined
     }
 
-    if (itemSignature === lastSyncedSignature.current) {
+    if (projectSignature === lastSyncedSignature.current) {
       return undefined
     }
 
@@ -228,108 +388,221 @@ function App() {
     }, 1800)
 
     return () => window.clearTimeout(timeout)
-  }, [itemSignature, sync?.gistId, sync?.token, syncBusy])
+  }, [projectSignature, sync?.gistId, sync?.token, syncBusy])
 
   const setToastMessage = (message: string) => {
     setToast(message)
   }
 
-  const resetCaptureDraft = () => {
-    setCaptureDraft((current) => ({
-      ...emptyCaptureDraft(),
+  const updateProjectById = (
+    projectId: string,
+    updater: (project: Project) => Project,
+    toastMessage?: string,
+  ) => {
+    setProjects((currentProjects) =>
+      sortProjects(
+        currentProjects.map((project) =>
+          project.id === projectId ? updater(cloneProject(project)) : project,
+        ),
+      ),
+    )
+
+    if (toastMessage) {
+      setToastMessage(toastMessage)
+    }
+  }
+
+  const resetNewProjectDraft = () => {
+    setNewProjectDraft((current) => ({
+      ...emptyNewProjectDraft(),
       tool: current.tool,
       status: current.status,
+      stage: current.stage,
       priority: current.priority,
     }))
     setShareBanner('')
   }
 
-  const handleCaptureSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleCreateProject = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    const source = shareBanner ? 'share-target' : 'manual'
-    const sessionHasData =
-      hasText(captureDraft.prompt) ||
-      hasText(captureDraft.result) ||
-      hasText(captureDraft.nextPrompt) ||
-      hasText(captureDraft.link)
-    const session = sessionHasData ? buildSession(captureDraft, source) : null
-
-    if (captureMode === 'existing' && captureTargetId) {
-      setItems((currentItems) =>
-        sortItems(
-          currentItems.map((item) => {
-            if (item.id !== captureTargetId) {
-              return item
-            }
-
-            const updatedAt = nowIso()
-            const mergedNotes = [item.notes, captureDraft.notes.trim()].filter(Boolean).join('\n\n')
-
-            return {
-              ...item,
-              status: captureDraft.status,
-              priority: captureDraft.priority,
-              tool: captureDraft.tool,
-              objective: captureDraft.objective.trim() || item.objective,
-              notes: mergedNotes,
-              tags: Array.from(new Set([...item.tags, ...normalizeTags(captureDraft.tags)])),
-              updatedAt,
-              lastTouchedAt: updatedAt,
-              sessions: session ? sortSessions([session, ...item.sessions]) : item.sessions,
-            }
-          }),
-        ),
-      )
-      setSelectedId(captureTargetId)
-      resetCaptureDraft()
-      setToastMessage('Saved a new update to that thread.')
+    if (!hasText(newProjectDraft.name)) {
+      setToastMessage('Project name is required.')
       return
     }
 
     const timestamp = nowIso()
-    const nextItem: WorkItem = {
+    const sessionHasData =
+      hasText(newProjectDraft.prompt) ||
+      hasText(newProjectDraft.result) ||
+      hasText(newProjectDraft.nextPrompt) ||
+      hasText(newProjectDraft.link)
+    const session = sessionHasData
+      ? buildSession(
+          {
+            tool: newProjectDraft.tool,
+            prompt: newProjectDraft.prompt,
+            result: newProjectDraft.result,
+            nextPrompt: newProjectDraft.nextPrompt,
+            link: newProjectDraft.link,
+          },
+          shareBanner ? 'share-target' : 'manual',
+        )
+      : null
+
+    const project: Project = {
       id: generateId(),
-      title: deriveTitle(captureDraft),
-      objective: captureDraft.objective.trim(),
-      status: captureDraft.status,
-      priority: captureDraft.priority,
-      tool: captureDraft.tool,
-      tags: normalizeTags(captureDraft.tags),
-      notes: captureDraft.notes.trim(),
+      name: newProjectDraft.name.trim(),
+      summary: newProjectDraft.summary.trim(),
+      status: newProjectDraft.status,
+      stage: newProjectDraft.stage,
+      priority: newProjectDraft.priority,
+      tool: newProjectDraft.tool,
+      tags: normalizeTags(newProjectDraft.tags),
+      notes: newProjectDraft.notes.trim(),
+      currentFocus:
+        newProjectDraft.currentFocus.trim() ||
+        excerpt(newProjectDraft.result, 160) ||
+        excerpt(newProjectDraft.summary, 160),
+      nextAction:
+        newProjectDraft.nextAction.trim() || newProjectDraft.nextPrompt.trim(),
+      repoUrl: normalizeRepoUrl(newProjectDraft.repoUrl),
+      productionUrl: newProjectDraft.productionUrl.trim(),
+      localPath: newProjectDraft.localPath.trim(),
       createdAt: timestamp,
       updatedAt: timestamp,
       lastTouchedAt: timestamp,
+      features: [],
+      deploys: [],
       sessions: session ? [session] : [],
-      source,
+      source: shareBanner ? 'share-target' : 'manual',
     }
 
-    setItems((currentItems) => sortItems([nextItem, ...currentItems]))
-    setSelectedId(nextItem.id)
-    setCaptureMode('existing')
-    setCaptureTargetId(nextItem.id)
-    resetCaptureDraft()
-    setToastMessage('Saved a new AI thread.')
+    setProjects((currentProjects) => sortProjects([project, ...currentProjects]))
+    setSelectedProjectId(project.id)
+    resetNewProjectDraft()
+    setToastMessage('Saved a new project.')
   }
 
-  const handleFocusSave = () => {
-    if (!focusDraft) {
+  const handleSaveProjectDetails = () => {
+    if (!selectedProject || !projectDraft) {
       return
     }
 
-    const updatedItem: WorkItem = {
-      ...focusDraft,
-      tags: normalizeTags(focusTags),
-      updatedAt: nowIso(),
-      lastTouchedAt: focusDraft.lastTouchedAt || nowIso(),
+    const timestamp = nowIso()
+
+    updateProjectById(
+      selectedProject.id,
+      (project) => ({
+        ...project,
+        ...projectDraft,
+        repoUrl: normalizeRepoUrl(projectDraft.repoUrl),
+        tags: normalizeTags(projectTags),
+        updatedAt: timestamp,
+        lastTouchedAt: timestamp,
+      }),
+      'Updated project details.',
+    )
+  }
+
+  const handleAddSession = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!selectedProject) {
+      return
     }
 
-    setItems((currentItems) =>
-      sortItems(
-        currentItems.map((item) => (item.id === updatedItem.id ? updatedItem : item)),
-      ),
+    if (
+      !hasText(sessionDraft.prompt) &&
+      !hasText(sessionDraft.result) &&
+      !hasText(sessionDraft.nextPrompt) &&
+      !hasText(sessionDraft.link)
+    ) {
+      setToastMessage('Add some AI activity before saving the log.')
+      return
+    }
+
+    const session = buildSession(sessionDraft, 'manual')
+    const timestamp = session.updatedAt
+
+    updateProjectById(
+      selectedProject.id,
+      (project) => ({
+        ...project,
+        tool: session.tool,
+        currentFocus: project.currentFocus || excerpt(session.result, 160),
+        nextAction: session.nextPrompt || project.nextAction,
+        updatedAt: timestamp,
+        lastTouchedAt: timestamp,
+        sessions: sortSessions([session, ...project.sessions]),
+      }),
+      'Added AI activity.',
     )
-    setToastMessage('Updated thread details.')
+    setSessionDraft(emptySessionDraft(selectedProject.tool))
+  }
+
+  const handleAddFeature = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!selectedProject) {
+      return
+    }
+
+    if (!hasText(featureDraft.title)) {
+      setToastMessage('Feature title is required.')
+      return
+    }
+
+    const feature = buildFeature(featureDraft)
+    const timestamp = feature.updatedAt
+
+    updateProjectById(
+      selectedProject.id,
+      (project) => ({
+        ...project,
+        updatedAt: timestamp,
+        lastTouchedAt: timestamp,
+        features: sortFeatures([feature, ...project.features]),
+      }),
+      'Added feature log.',
+    )
+    setFeatureDraft(emptyFeatureDraft())
+  }
+
+  const handleAddDeploy = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!selectedProject) {
+      return
+    }
+
+    const deploy = buildDeploy(deployDraft)
+    const timestamp = deploy.updatedAt
+
+    updateProjectById(
+      selectedProject.id,
+      (project) => ({
+        ...project,
+        stage:
+          deploy.status === 'live' && deploy.environment === 'production'
+            ? 'live'
+            : project.stage,
+        productionUrl:
+          deploy.environment === 'production' && deploy.url
+            ? deploy.url
+            : project.productionUrl,
+        updatedAt: timestamp,
+        lastTouchedAt: timestamp,
+        deploys: sortDeploys([deploy, ...project.deploys]),
+      }),
+      'Added deploy log.',
+    )
+    setDeployDraft((current) => ({
+      ...emptyDeployDraft(),
+      provider: current.provider,
+      environment: current.environment,
+      status: current.status,
+    }))
   }
 
   const handleCreateSyncGist = async () => {
@@ -341,7 +614,7 @@ function App() {
     try {
       setSyncBusy(true)
       setSyncMessage('Creating a private sync gist on GitHub...')
-      const created = await createSecretSyncGist(syncTokenInput.trim(), items)
+      const created = await createSecretSyncGist(syncTokenInput.trim(), projects)
       const nextSync: SyncConfig = {
         provider: 'github-gist',
         gistId: created.gistId,
@@ -353,7 +626,7 @@ function App() {
       setSync(nextSync)
       setSyncGistInput(created.gistId)
       setSyncMessage(nextSync.lastSyncStatus ?? 'Connected.')
-      lastSyncedSignature.current = itemSignature
+      lastSyncedSignature.current = projectSignature
       setToastMessage('GitHub sync is live.')
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : 'Could not create the sync gist.')
@@ -362,7 +635,7 @@ function App() {
     }
   }
 
-  const handleSyncNow = async (quiet = false) => {
+  async function handleSyncNow(quiet = false) {
     const token = (sync?.token ?? syncTokenInput).trim()
     const gistId = (sync?.gistId ?? syncGistInput).trim()
 
@@ -374,9 +647,9 @@ function App() {
     try {
       setSyncBusy(true)
       setSyncMessage('Merging local changes with GitHub...')
-      const merged = await syncWithRemote(token, gistId, items)
+      const merged = await syncWithRemote(token, gistId, projects)
       startTransition(() => {
-        setItems(merged.items)
+        setProjects(merged.projects)
       })
 
       const nextSync: SyncConfig = {
@@ -391,7 +664,7 @@ function App() {
       setSyncTokenInput(token)
       setSyncGistInput(gistId)
       setSyncMessage(nextSync.lastSyncStatus ?? 'Synced.')
-      lastSyncedSignature.current = JSON.stringify(sortItems(merged.items))
+      lastSyncedSignature.current = JSON.stringify(sortProjects(merged.projects))
 
       if (!quiet) {
         setToastMessage('Synced with GitHub.')
@@ -403,29 +676,62 @@ function App() {
     }
   }
 
-  const handleImportFile = async (file: File | undefined) => {
+  const handleImportChatGpt = async (file: File | undefined) => {
     if (!file) {
       return
     }
 
     try {
       setImportBusy(true)
-      setImportMessage('Parsing your ChatGPT export...')
+      setChatGptImportMessage('Parsing your ChatGPT export...')
       const imported = await importChatGptFile(file)
 
       startTransition(() => {
-        setItems((currentItems) => mergeItemCollections(imported.items, currentItems))
+        setProjects((currentProjects) =>
+          mergeProjectCollections(imported.projects, currentProjects),
+        )
       })
 
-      if (imported.items[0]) {
-        setSelectedId(imported.items[0].id)
+      if (imported.projects[0]) {
+        setSelectedProjectId(imported.projects[0].id)
       }
 
-      setImportMessage(`Imported ${imported.count} ChatGPT threads.`)
-      setToastMessage(`Imported ${imported.count} chats.`)
+      setChatGptImportMessage(`Imported ${imported.count} ChatGPT projects.`)
+      setToastMessage(`Imported ${imported.count} ChatGPT projects.`)
     } catch (error) {
-      setImportMessage(
+      setChatGptImportMessage(
         error instanceof Error ? error.message : 'The ChatGPT file could not be imported.',
+      )
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
+  const handleImportSnapshot = async (file: File | undefined) => {
+    if (!file) {
+      return
+    }
+
+    try {
+      setImportBusy(true)
+      setSnapshotImportMessage('Parsing your local project snapshot...')
+      const imported = await importProjectSnapshotFile(file)
+
+      startTransition(() => {
+        setProjects((currentProjects) =>
+          mergeProjectCollections(imported.projects, currentProjects),
+        )
+      })
+
+      if (imported.projects[0]) {
+        setSelectedProjectId(imported.projects[0].id)
+      }
+
+      setSnapshotImportMessage(`Imported ${imported.count} Codex projects.`)
+      setToastMessage(`Imported ${imported.count} Codex projects.`)
+    } catch (error) {
+      setSnapshotImportMessage(
+        error instanceof Error ? error.message : 'The snapshot file could not be imported.',
       )
     } finally {
       setImportBusy(false)
@@ -438,7 +744,7 @@ function App() {
     }
 
     try {
-      await copyText(value)
+      await navigator.clipboard.writeText(value)
       setToastMessage(`Copied ${label}.`)
     } catch {
       setToastMessage(`Could not copy ${label}.`)
@@ -447,38 +753,28 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="hero-panel">
-        <div className="hero-panel__intro">
-          <p className="eyebrow">MyBrain</p>
-          <h1>Your AI life, with enough context to pick it back up on your phone.</h1>
-          <p className="hero-copy">
-            Track each thread, the last prompt you sent, what it produced, and the
-            exact next move. Install it on your phone, share chats into it, and keep
-            your active AI work from dissolving into tabs.
-          </p>
+      <header className="topbar">
+        <div className="topbar__title">
+          <h1>Projects</h1>
+          <p>Private Codex tracker</p>
         </div>
-
-        <div className="hero-panel__stats">
-          <article className="stat-card">
-            <span className="label">Active</span>
-            <strong>{items.filter((item) => item.status === 'active').length}</strong>
-            <p>Threads you should move today.</p>
-          </article>
-          <article className="stat-card">
-            <span className="label">Waiting</span>
-            <strong>{items.filter((item) => item.status === 'waiting').length}</strong>
-            <p>Blocked on other people, tools, or time.</p>
-          </article>
-          <article className="stat-card">
-            <span className="label">Stale</span>
-            <strong>{countStaleItems(items)}</strong>
-            <p>Untouched for a week and likely fading.</p>
-          </article>
-          <article className="stat-card stat-card--accent">
-            <span className="label">Phone-ready</span>
-            <strong>{sync?.gistId ? 'Synced' : 'Local'}</strong>
-            <p>{sync?.gistId ? 'GitHub sync is attached.' : 'Turn on sync below.'}</p>
-          </article>
+        <div className="topbar__stats">
+          <span className="stat-pill">
+            <strong>{projects.filter((project) => project.status === 'active').length}</strong>
+            active
+          </span>
+          <span className="stat-pill">
+            <strong>{countLiveProjects(projects)}</strong>
+            live
+          </span>
+          <span className="stat-pill">
+            <strong>{countShippedFeatures(projects)}</strong>
+            shipped
+          </span>
+          <span className="stat-pill">
+            <strong>{countStaleProjects(projects)}</strong>
+            stale
+          </span>
         </div>
       </header>
 
@@ -491,104 +787,745 @@ function App() {
       ) : null}
 
       <main className="workspace-grid">
-        <section className="panel panel--capture">
+        <section className="panel">
           <div className="panel__header">
             <div>
-              <p className="eyebrow">Quick Capture</p>
-              <h2>Freeze the thread before it disappears.</h2>
+              <p className="eyebrow">Project List</p>
+              <h2>Everything you are building.</h2>
             </div>
-            <div className="capture-toggle">
-              <button
-                type="button"
-                className={captureMode === 'new' ? 'active' : ''}
-                onClick={() => setCaptureMode('new')}
+            <div className="board-controls">
+              <input
+                className="search-input"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search projects, features, deploys, prompts..."
+              />
+              <select
+                value={statusFilter}
+                onChange={(event) =>
+                  setStatusFilter(event.target.value as ProjectStatus | 'all')
+                }
               >
-                New thread
-              </button>
-              <button
-                type="button"
-                className={captureMode === 'existing' ? 'active' : ''}
-                onClick={() => setCaptureMode('existing')}
+                <option value="all">All statuses</option>
+                {PROJECT_STATUS_OPTIONS.map((status) => (
+                  <option key={status.value} value={status.value}>
+                    {status.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={stageFilter}
+                onChange={(event) =>
+                  setStageFilter(event.target.value as ProjectStage | 'all')
+                }
               >
-                Update existing
-              </button>
+                <option value="all">All stages</option>
+                {PROJECT_STAGE_OPTIONS.map((stage) => (
+                  <option key={stage.value} value={stage.value}>
+                    {stage.label}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
-          <form className="capture-form" onSubmit={handleCaptureSubmit}>
-            {captureMode === 'existing' ? (
-              <label>
-                <span>Thread</span>
-                <select
-                  value={captureTargetId}
-                  onChange={(event) => setCaptureTargetId(event.target.value)}
-                >
-                  <option value="">Choose a thread</option>
-                  {items.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <label>
-                <span>Thread title</span>
-                <input
-                  value={captureDraft.title}
-                  onChange={(event) =>
-                    setCaptureDraft((current) => ({ ...current, title: event.target.value }))
-                  }
-                  placeholder="Ship a Codex workflow for invoicing"
+          {filteredProjects.length === 0 ? (
+            <div className="empty-panel">
+              <p>No projects match this view yet.</p>
+              <span>Import a snapshot or add a project below.</span>
+            </div>
+          ) : (
+            <div className="project-grid">
+              {filteredProjects.map((project) => (
+                <ProjectCard
+                  key={project.id}
+                  project={project}
+                  selected={project.id === selectedProjectId}
+                  onSelect={setSelectedProjectId}
                 />
-              </label>
-            )}
+              ))}
+            </div>
+          )}
+        </section>
 
-            <div className="form-row">
-              <label>
-                <span>Tool</span>
-                <select
-                  value={captureDraft.tool}
-                  onChange={(event) =>
-                    setCaptureDraft((current) => ({
-                      ...current,
-                      tool: event.target.value as ToolName,
-                    }))
-                  }
-                >
-                  {TOOL_OPTIONS.map((tool) => (
-                    <option key={tool} value={tool}>
-                      {tool}
-                    </option>
-                  ))}
-                </select>
-              </label>
+        <section className="panel panel--focus">
+          <div className="panel__header">
+            <div>
+              <p className="eyebrow">Selected Project</p>
+              <h2>{selectedProject?.name ?? 'Pick a project'}</h2>
+            </div>
+            {selectedProject ? (
+              <div className="focus-meta">
+                <span>{selectedProject.tool}</span>
+                <span>{selectedProject.stage}</span>
+                <span>{formatRelative(selectedProject.lastTouchedAt)}</span>
+              </div>
+            ) : null}
+          </div>
 
+          {selectedProject && projectDraft ? (
+            <div className="focus-layout">
+              <div className="focus-column">
+                <section className="subpanel">
+                  <div className="subpanel__header">
+                    <div>
+                      <p className="eyebrow">Details</p>
+                      <h3>Status, links, and next move.</h3>
+                    </div>
+                  </div>
+
+                  <div className="focus-form">
+                    <label>
+                      <span>Name</span>
+                      <input
+                        value={projectDraft.name}
+                        onChange={(event) =>
+                          setProjectDraft((current) =>
+                            current ? { ...current, name: event.target.value } : current,
+                          )
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Summary</span>
+                      <textarea
+                        rows={3}
+                        value={projectDraft.summary}
+                        onChange={(event) =>
+                          setProjectDraft((current) =>
+                            current ? { ...current, summary: event.target.value } : current,
+                          )
+                        }
+                      />
+                    </label>
+                    <div className="form-row form-row--4">
+                      <label>
+                        <span>Status</span>
+                        <select
+                          value={projectDraft.status}
+                          onChange={(event) =>
+                            setProjectDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    status: event.target.value as ProjectStatus,
+                                  }
+                                : current,
+                            )
+                          }
+                        >
+                          {PROJECT_STATUS_OPTIONS.map((status) => (
+                            <option key={status.value} value={status.value}>
+                              {status.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Stage</span>
+                        <select
+                          value={projectDraft.stage}
+                          onChange={(event) =>
+                            setProjectDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    stage: event.target.value as ProjectStage,
+                                  }
+                                : current,
+                            )
+                          }
+                        >
+                          {PROJECT_STAGE_OPTIONS.map((stage) => (
+                            <option key={stage.value} value={stage.value}>
+                              {stage.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Priority</span>
+                        <select
+                          value={projectDraft.priority}
+                          onChange={(event) =>
+                            setProjectDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    priority: event.target.value as Priority,
+                                  }
+                                : current,
+                            )
+                          }
+                        >
+                          {PRIORITY_OPTIONS.map((priority) => (
+                            <option key={priority.value} value={priority.value}>
+                              {priority.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Main tool</span>
+                        <select
+                          value={projectDraft.tool}
+                          onChange={(event) =>
+                            setProjectDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    tool: event.target.value as ToolName,
+                                  }
+                                : current,
+                            )
+                          }
+                        >
+                          {TOOL_OPTIONS.map((tool) => (
+                            <option key={tool} value={tool}>
+                              {tool}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="form-row">
+                      <label>
+                        <span>Current focus</span>
+                        <input
+                          value={projectDraft.currentFocus}
+                          onChange={(event) =>
+                            setProjectDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    currentFocus: event.target.value,
+                                  }
+                                : current,
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Next action</span>
+                        <input
+                          value={projectDraft.nextAction}
+                          onChange={(event) =>
+                            setProjectDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    nextAction: event.target.value,
+                                  }
+                                : current,
+                            )
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div className="form-row">
+                      <label>
+                        <span>Repo URL</span>
+                        <input
+                          value={projectDraft.repoUrl}
+                          onChange={(event) =>
+                            setProjectDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    repoUrl: event.target.value,
+                                  }
+                                : current,
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Production URL</span>
+                        <input
+                          value={projectDraft.productionUrl}
+                          onChange={(event) =>
+                            setProjectDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    productionUrl: event.target.value,
+                                  }
+                                : current,
+                            )
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div className="form-row">
+                      <label>
+                        <span>Local path</span>
+                        <input
+                          value={projectDraft.localPath}
+                          onChange={(event) =>
+                            setProjectDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    localPath: event.target.value,
+                                  }
+                                : current,
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Tags</span>
+                        <input
+                          value={projectTags}
+                          onChange={(event) => setProjectTags(event.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <label>
+                      <span>Notes</span>
+                      <textarea
+                        rows={4}
+                        value={projectDraft.notes}
+                        onChange={(event) =>
+                          setProjectDraft((current) =>
+                            current ? { ...current, notes: event.target.value } : current,
+                          )
+                        }
+                      />
+                    </label>
+
+                    <div className="form-actions">
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={handleSaveProjectDetails}
+                      >
+                        Save details
+                      </button>
+                      {projectDraft.repoUrl ? (
+                        <a
+                          className="ghost-button"
+                          href={projectDraft.repoUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open repo
+                        </a>
+                      ) : null}
+                      {projectDraft.productionUrl ? (
+                        <a
+                          className="ghost-button"
+                          href={projectDraft.productionUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open production
+                        </a>
+                      ) : null}
+                      {projectDraft.nextAction ? (
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => handleCopy(projectDraft.nextAction, 'next action')}
+                        >
+                          Copy next action
+                        </button>
+                      ) : null}
+                    </div>
+
+                    <div className="focus-timestamps">
+                      <span>Created {formatDateTime(selectedProject.createdAt)}</span>
+                      <span>Updated {formatDateTime(selectedProject.updatedAt)}</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="subpanel">
+                  <div className="subpanel__header">
+                    <div>
+                      <p className="eyebrow">AI Log</p>
+                      <h3>Latest prompt, result, and next prompt.</h3>
+                    </div>
+                  </div>
+
+                  <form className="mini-form" onSubmit={handleAddSession}>
+                    <label>
+                      <span>Tool</span>
+                      <select
+                        value={sessionDraft.tool}
+                        onChange={(event) =>
+                          setSessionDraft((current) => ({
+                            ...current,
+                            tool: event.target.value as ToolName,
+                          }))
+                        }
+                      >
+                        {TOOL_OPTIONS.map((tool) => (
+                          <option key={tool} value={tool}>
+                            {tool}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Last prompt</span>
+                      <textarea
+                        rows={3}
+                        value={sessionDraft.prompt}
+                        onChange={(event) =>
+                          setSessionDraft((current) => ({
+                            ...current,
+                            prompt: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>What it did</span>
+                      <textarea
+                        rows={3}
+                        value={sessionDraft.result}
+                        onChange={(event) =>
+                          setSessionDraft((current) => ({
+                            ...current,
+                            result: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <div className="form-row">
+                      <label>
+                        <span>Next prompt</span>
+                        <textarea
+                          rows={2}
+                          value={sessionDraft.nextPrompt}
+                          onChange={(event) =>
+                            setSessionDraft((current) => ({
+                              ...current,
+                              nextPrompt: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Link</span>
+                        <input
+                          value={sessionDraft.link}
+                          onChange={(event) =>
+                            setSessionDraft((current) => ({
+                              ...current,
+                              link: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div className="form-actions">
+                      <button type="submit" className="primary-button">
+                        Add AI log
+                      </button>
+                    </div>
+                  </form>
+                </section>
+              </div>
+
+              <div className="focus-column">
+                <section className="subpanel">
+                  <div className="subpanel__header">
+                    <div>
+                      <p className="eyebrow">Deploys</p>
+                      <h3>
+                        {latestSelectedDeploy
+                          ? `${latestSelectedDeploy.status} on ${latestSelectedDeploy.provider}`
+                          : 'Track deploy state, URLs, and commits.'}
+                      </h3>
+                    </div>
+                  </div>
+
+                  <form className="mini-form" onSubmit={handleAddDeploy}>
+                    <div className="form-row form-row--3">
+                      <label>
+                        <span>Provider</span>
+                        <select
+                          value={deployDraft.provider}
+                          onChange={(event) =>
+                            setDeployDraft((current) => ({
+                              ...current,
+                              provider: event.target.value as DeployProvider,
+                            }))
+                          }
+                        >
+                          {DEPLOY_PROVIDER_OPTIONS.map((provider) => (
+                            <option key={provider} value={provider}>
+                              {provider}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Environment</span>
+                        <select
+                          value={deployDraft.environment}
+                          onChange={(event) =>
+                            setDeployDraft((current) => ({
+                              ...current,
+                              environment: event.target.value as DeployEnvironment,
+                            }))
+                          }
+                        >
+                          {DEPLOY_ENV_OPTIONS.map((environment) => (
+                            <option key={environment.value} value={environment.value}>
+                              {environment.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        <span>Status</span>
+                        <select
+                          value={deployDraft.status}
+                          onChange={(event) =>
+                            setDeployDraft((current) => ({
+                              ...current,
+                              status: event.target.value as DeployStatus,
+                            }))
+                          }
+                        >
+                          {DEPLOY_STATUS_OPTIONS.map((status) => (
+                            <option key={status.value} value={status.value}>
+                              {status.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <div className="form-row">
+                      <label>
+                        <span>Deploy URL</span>
+                        <input
+                          value={deployDraft.url}
+                          onChange={(event) =>
+                            setDeployDraft((current) => ({
+                              ...current,
+                              url: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Commit</span>
+                        <input
+                          value={deployDraft.commit}
+                          onChange={(event) =>
+                            setDeployDraft((current) => ({
+                              ...current,
+                              commit: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                    </div>
+                    <label>
+                      <span>Notes</span>
+                      <textarea
+                        rows={2}
+                        value={deployDraft.notes}
+                        onChange={(event) =>
+                          setDeployDraft((current) => ({
+                            ...current,
+                            notes: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <div className="form-actions">
+                      <button type="submit" className="primary-button">
+                        Add deploy
+                      </button>
+                    </div>
+                  </form>
+
+                  <DeployList deploys={selectedProject.deploys} />
+                </section>
+
+                <section className="subpanel">
+                  <div className="subpanel__header">
+                    <div>
+                      <p className="eyebrow">Features</p>
+                      <h3>What shipped, what is in progress, what is next.</h3>
+                    </div>
+                  </div>
+
+                  <form className="mini-form" onSubmit={handleAddFeature}>
+                    <div className="form-row">
+                      <label>
+                        <span>Feature</span>
+                        <input
+                          value={featureDraft.title}
+                          onChange={(event) =>
+                            setFeatureDraft((current) => ({
+                              ...current,
+                              title: event.target.value,
+                            }))
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Status</span>
+                        <select
+                          value={featureDraft.status}
+                          onChange={(event) =>
+                            setFeatureDraft((current) => ({
+                              ...current,
+                              status: event.target.value as FeatureStatus,
+                            }))
+                          }
+                        >
+                          {FEATURE_STATUS_OPTIONS.map((status) => (
+                            <option key={status.value} value={status.value}>
+                              {status.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <label>
+                      <span>Summary</span>
+                      <textarea
+                        rows={2}
+                        value={featureDraft.summary}
+                        onChange={(event) =>
+                          setFeatureDraft((current) => ({
+                            ...current,
+                            summary: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Notes</span>
+                      <textarea
+                        rows={2}
+                        value={featureDraft.notes}
+                        onChange={(event) =>
+                          setFeatureDraft((current) => ({
+                            ...current,
+                            notes: event.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <div className="form-actions">
+                      <button type="submit" className="primary-button">
+                        Add feature
+                      </button>
+                    </div>
+                  </form>
+
+                  <FeatureList features={selectedProject.features} />
+                </section>
+
+                <section className="subpanel">
+                  <div className="subpanel__header">
+                    <div>
+                      <p className="eyebrow">AI Activity</p>
+                      <h3>
+                        {latestSelectedSession
+                          ? excerpt(latestSelectedSession.prompt, 72)
+                          : 'Chronological AI work for this project.'}
+                      </h3>
+                    </div>
+                  </div>
+
+                  <AiSessionList sessions={selectedProject.sessions} onCopy={handleCopy} />
+                </section>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-panel">
+              <p>Pick a project from the board to manage its deploys, features, and AI work.</p>
+            </div>
+          )}
+        </section>
+
+        <section className="panel">
+          <div className="panel__header">
+            <div>
+              <p className="eyebrow">Quick Add</p>
+              <h2>New project</h2>
+            </div>
+          </div>
+
+          <form className="capture-form" onSubmit={handleCreateProject}>
+            <label>
+              <span>Name</span>
+              <input
+                value={newProjectDraft.name}
+                onChange={(event) =>
+                  setNewProjectDraft((current) => ({ ...current, name: event.target.value }))
+                }
+                placeholder="new project"
+              />
+            </label>
+
+            <label>
+              <span>Summary</span>
+              <textarea
+                rows={2}
+                value={newProjectDraft.summary}
+                onChange={(event) =>
+                  setNewProjectDraft((current) => ({
+                    ...current,
+                    summary: event.target.value,
+                  }))
+                }
+                placeholder="what this is"
+              />
+            </label>
+
+            <div className="form-row form-row--4">
               <label>
                 <span>Status</span>
                 <select
-                  value={captureDraft.status}
+                  value={newProjectDraft.status}
                   onChange={(event) =>
-                    setCaptureDraft((current) => ({
+                    setNewProjectDraft((current) => ({
                       ...current,
-                      status: event.target.value as WorkStatus,
+                      status: event.target.value as ProjectStatus,
                     }))
                   }
                 >
-                  {STATUS_OPTIONS.map((status) => (
+                  {PROJECT_STATUS_OPTIONS.map((status) => (
                     <option key={status.value} value={status.value}>
                       {status.label}
                     </option>
                   ))}
                 </select>
               </label>
-
+              <label>
+                <span>Stage</span>
+                <select
+                  value={newProjectDraft.stage}
+                  onChange={(event) =>
+                    setNewProjectDraft((current) => ({
+                      ...current,
+                      stage: event.target.value as ProjectStage,
+                    }))
+                  }
+                >
+                  {PROJECT_STAGE_OPTIONS.map((stage) => (
+                    <option key={stage.value} value={stage.value}>
+                      {stage.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label>
                 <span>Priority</span>
                 <select
-                  value={captureDraft.priority}
+                  value={newProjectDraft.priority}
                   onChange={(event) =>
-                    setCaptureDraft((current) => ({
+                    setNewProjectDraft((current) => ({
                       ...current,
                       priority: event.target.value as Priority,
                     }))
@@ -601,83 +1538,106 @@ function App() {
                   ))}
                 </select>
               </label>
+              <label>
+                <span>Tool</span>
+                <select
+                  value={newProjectDraft.tool}
+                  onChange={(event) =>
+                    setNewProjectDraft((current) => ({
+                      ...current,
+                      tool: event.target.value as ToolName,
+                    }))
+                  }
+                >
+                  {TOOL_OPTIONS.map((tool) => (
+                    <option key={tool} value={tool}>
+                      {tool}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
-
-            <label>
-              <span>Objective</span>
-              <textarea
-                rows={3}
-                value={captureDraft.objective}
-                onChange={(event) =>
-                  setCaptureDraft((current) => ({
-                    ...current,
-                    objective: event.target.value,
-                  }))
-                }
-                placeholder="What are you actually trying to get done?"
-              />
-            </label>
-
-            <label>
-              <span>Last prompt</span>
-              <textarea
-                rows={4}
-                value={captureDraft.prompt}
-                onChange={(event) =>
-                  setCaptureDraft((current) => ({ ...current, prompt: event.target.value }))
-                }
-                placeholder="Paste the last thing you asked the model."
-              />
-            </label>
-
-            <label>
-              <span>What that prompt did</span>
-              <textarea
-                rows={4}
-                value={captureDraft.result}
-                onChange={(event) =>
-                  setCaptureDraft((current) => ({ ...current, result: event.target.value }))
-                }
-                placeholder="Summarize what happened, what it produced, or why it failed."
-              />
-            </label>
-
-            <label>
-              <span>Next prompt</span>
-              <textarea
-                rows={3}
-                value={captureDraft.nextPrompt}
-                onChange={(event) =>
-                  setCaptureDraft((current) => ({
-                    ...current,
-                    nextPrompt: event.target.value,
-                  }))
-                }
-                placeholder="Store the next exact prompt so restart friction stays low."
-              />
-            </label>
 
             <div className="form-row">
               <label>
-                <span>Tags</span>
+                <span>Current focus</span>
                 <input
-                  value={captureDraft.tags}
+                  value={newProjectDraft.currentFocus}
                   onChange={(event) =>
-                    setCaptureDraft((current) => ({ ...current, tags: event.target.value }))
+                    setNewProjectDraft((current) => ({
+                      ...current,
+                      currentFocus: event.target.value,
+                    }))
                   }
-                  placeholder="client, launch, video"
+                  placeholder="what matters right now"
                 />
               </label>
-
               <label>
-                <span>Link</span>
+                <span>Next action</span>
                 <input
-                  type="url"
-                  value={captureDraft.link}
+                  value={newProjectDraft.nextAction}
                   onChange={(event) =>
-                    setCaptureDraft((current) => ({ ...current, link: event.target.value }))
+                    setNewProjectDraft((current) => ({
+                      ...current,
+                      nextAction: event.target.value,
+                    }))
                   }
-                  placeholder="https://chatgpt.com/..."
+                  placeholder="exact next step"
+                />
+              </label>
+            </div>
+
+            <div className="form-row">
+              <label>
+                <span>Repo</span>
+                <input
+                  value={newProjectDraft.repoUrl}
+                  onChange={(event) =>
+                    setNewProjectDraft((current) => ({
+                      ...current,
+                      repoUrl: event.target.value,
+                    }))
+                  }
+                  placeholder="repo url"
+                />
+              </label>
+              <label>
+                <span>Production</span>
+                <input
+                  value={newProjectDraft.productionUrl}
+                  onChange={(event) =>
+                    setNewProjectDraft((current) => ({
+                      ...current,
+                      productionUrl: event.target.value,
+                    }))
+                  }
+                  placeholder="prod url"
+                />
+              </label>
+            </div>
+
+            <div className="form-row">
+              <label>
+                <span>Path</span>
+                <input
+                  value={newProjectDraft.localPath}
+                  onChange={(event) =>
+                    setNewProjectDraft((current) => ({
+                      ...current,
+                      localPath: event.target.value,
+                    }))
+                  }
+                  placeholder="local path"
+                />
+              </label>
+              <label>
+                <span>Tags</span>
+                <input
+                  value={newProjectDraft.tags}
+                  onChange={(event) =>
+                    setNewProjectDraft((current) => ({ ...current, tags: event.target.value }))
+                  }
+                  placeholder="tags"
                 />
               </label>
             </div>
@@ -685,220 +1645,91 @@ function App() {
             <label>
               <span>Notes</span>
               <textarea
-                rows={3}
-                value={captureDraft.notes}
+                rows={2}
+                value={newProjectDraft.notes}
                 onChange={(event) =>
-                  setCaptureDraft((current) => ({ ...current, notes: event.target.value }))
+                  setNewProjectDraft((current) => ({ ...current, notes: event.target.value }))
                 }
-                placeholder="Human reminders, blockers, or the weird thing to remember later."
+                placeholder="setup rules, blockers, context"
               />
             </label>
 
+            <div className="subpanel">
+              <div className="subpanel__header">
+                <div>
+                  <p className="eyebrow">Initial AI Log</p>
+                  <h3>Optional</h3>
+                </div>
+              </div>
+
+              <label>
+                <span>Prompt</span>
+                <textarea
+                  rows={2}
+                  value={newProjectDraft.prompt}
+                  onChange={(event) =>
+                    setNewProjectDraft((current) => ({ ...current, prompt: event.target.value }))
+                  }
+                  placeholder="last prompt"
+                />
+              </label>
+
+              <label>
+                <span>What it did</span>
+                <textarea
+                  rows={2}
+                  value={newProjectDraft.result}
+                  onChange={(event) =>
+                    setNewProjectDraft((current) => ({ ...current, result: event.target.value }))
+                  }
+                  placeholder="result"
+                />
+              </label>
+
+              <div className="form-row">
+                <label>
+                  <span>Next prompt</span>
+                  <textarea
+                    rows={2}
+                    value={newProjectDraft.nextPrompt}
+                    onChange={(event) =>
+                      setNewProjectDraft((current) => ({
+                        ...current,
+                        nextPrompt: event.target.value,
+                      }))
+                    }
+                    placeholder="next prompt"
+                  />
+                </label>
+                <label>
+                  <span>Link</span>
+                  <input
+                    value={newProjectDraft.link}
+                    onChange={(event) =>
+                      setNewProjectDraft((current) => ({ ...current, link: event.target.value }))
+                    }
+                    placeholder="chat link"
+                  />
+                </label>
+              </div>
+            </div>
+
             <div className="form-actions">
               <button type="submit" className="primary-button">
-                {captureMode === 'new' ? 'Save thread' : 'Save update'}
+                Save project
               </button>
-              <button type="button" className="ghost-button" onClick={resetCaptureDraft}>
+              <button type="button" className="ghost-button" onClick={resetNewProjectDraft}>
                 Clear
               </button>
             </div>
           </form>
         </section>
 
-        <section className="panel">
-          <div className="panel__header">
-            <div>
-              <p className="eyebrow">Thread Board</p>
-              <h2>Everything you have in motion.</h2>
-            </div>
-            <div className="board-controls">
-              <input
-                className="search-input"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search prompts, results, tags, notes..."
-              />
-              <select
-                value={statusFilter}
-                onChange={(event) =>
-                  setStatusFilter(event.target.value as WorkStatus | 'all')
-                }
-              >
-                <option value="all">All statuses</option>
-                {STATUS_OPTIONS.map((status) => (
-                  <option key={status.value} value={status.value}>
-                    {status.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {filteredItems.length === 0 ? (
-            <div className="empty-panel">
-              <p>No threads match this view yet.</p>
-              <span>Start by saving a thread or importing your ChatGPT export below.</span>
-            </div>
-          ) : (
-            <div className="work-grid">
-              {filteredItems.map((item) => (
-                <WorkItemCard
-                  key={item.id}
-                  item={item}
-                  selected={item.id === selectedId}
-                  onSelect={setSelectedId}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="panel panel--focus">
-          <div className="panel__header">
-            <div>
-              <p className="eyebrow">Focus Sheet</p>
-              <h2>{selectedItem?.title ?? 'Pick a thread'}</h2>
-            </div>
-            {selectedItem ? (
-              <div className="focus-meta">
-                <span>{selectedItem.tool}</span>
-                <span>{formatRelative(selectedItem.lastTouchedAt)}</span>
-              </div>
-            ) : null}
-          </div>
-
-          {focusDraft ? (
-            <div className="focus-layout">
-              <div className="focus-form">
-                <label>
-                  <span>Title</span>
-                  <input
-                    value={focusDraft.title}
-                    onChange={(event) =>
-                      setFocusDraft((current) =>
-                        current ? { ...current, title: event.target.value } : current,
-                      )
-                    }
-                  />
-                </label>
-                <label>
-                  <span>Objective</span>
-                  <textarea
-                    rows={4}
-                    value={focusDraft.objective}
-                    onChange={(event) =>
-                      setFocusDraft((current) =>
-                        current ? { ...current, objective: event.target.value } : current,
-                      )
-                    }
-                  />
-                </label>
-                <div className="form-row">
-                  <label>
-                    <span>Status</span>
-                    <select
-                      value={focusDraft.status}
-                      onChange={(event) =>
-                        setFocusDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                status: event.target.value as WorkStatus,
-                              }
-                            : current,
-                        )
-                      }
-                    >
-                      {STATUS_OPTIONS.map((status) => (
-                        <option key={status.value} value={status.value}>
-                          {status.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Priority</span>
-                    <select
-                      value={focusDraft.priority}
-                      onChange={(event) =>
-                        setFocusDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                priority: event.target.value as Priority,
-                              }
-                            : current,
-                        )
-                      }
-                    >
-                      {PRIORITY_OPTIONS.map((priority) => (
-                        <option key={priority.value} value={priority.value}>
-                          {priority.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <label>
-                  <span>Tags</span>
-                  <input
-                    value={focusTags}
-                    onChange={(event) => setFocusTags(event.target.value)}
-                    placeholder="comma, separated, tags"
-                  />
-                </label>
-                <label>
-                  <span>Notes</span>
-                  <textarea
-                    rows={5}
-                    value={focusDraft.notes}
-                    onChange={(event) =>
-                      setFocusDraft((current) =>
-                        current ? { ...current, notes: event.target.value } : current,
-                      )
-                    }
-                  />
-                </label>
-
-                <div className="focus-actions">
-                  <button type="button" className="primary-button" onClick={handleFocusSave}>
-                    Save details
-                  </button>
-                  {latestSelectedSession?.nextPrompt ? (
-                    <button
-                      type="button"
-                      className="ghost-button"
-                      onClick={() =>
-                        handleCopy(latestSelectedSession.nextPrompt, 'next prompt')
-                      }
-                    >
-                      Copy next prompt
-                    </button>
-                  ) : null}
-                </div>
-
-                <div className="focus-timestamps">
-                  <span>Created {formatDateTime(focusDraft.createdAt)}</span>
-                  <span>Updated {formatDateTime(focusDraft.updatedAt)}</span>
-                </div>
-              </div>
-
-              <div className="focus-timeline">
-                <SessionList sessions={focusDraft.sessions} onCopy={handleCopy} />
-              </div>
-            </div>
-          ) : (
-            <div className="empty-panel">
-              <p>Pick a thread from the board to see its full context.</p>
-            </div>
-          )}
-        </section>
-
         <section className="panel panel--system">
           <div className="panel__header">
             <div>
-              <p className="eyebrow">Sync & Import</p>
-              <h2>Make it survive across devices.</h2>
+              <p className="eyebrow">Imports & Sync</p>
+              <h2>Phone and desktop continuity.</h2>
             </div>
           </div>
 
@@ -906,9 +1737,8 @@ function App() {
             <article className="system-card">
               <h3>GitHub sync</h3>
               <p>
-                This app stores data locally first. Add a GitHub token with
-                <code>gist</code> scope and it will sync through a private gist so your
-                phone and desktop stay aligned.
+                Store project state locally first, then sync it across phone and desktop
+                through a private gist using a GitHub token with <code>gist</code> scope.
               </p>
               <label>
                 <span>GitHub token</span>
@@ -951,9 +1781,9 @@ function App() {
             <article className="system-card">
               <h3>ChatGPT import</h3>
               <p>
-                Import a ChatGPT export zip or a raw <code>conversations.json</code>{' '}
-                file. MyBrain keeps the latest prompt and latest result for each chat so
-                the tracker stays lightweight enough to sync cleanly.
+                Import a ChatGPT export zip or raw <code>conversations.json</code>. Each
+                imported chat becomes a project-like research item with the latest prompt
+                and latest result attached.
               </p>
               <label className="file-input">
                 <span>{importBusy ? 'Importing...' : 'Choose ChatGPT export'}</span>
@@ -961,17 +1791,47 @@ function App() {
                   type="file"
                   accept=".zip,.json,application/json"
                   onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    void handleImportFile(file)
+                    void handleImportChatGpt(event.target.files?.[0])
                     event.currentTarget.value = ''
                   }}
                 />
               </label>
-              <p className="system-status">{importMessage}</p>
+              <p className="system-status">{chatGptImportMessage}</p>
+            </article>
+
+            <article className="system-card">
+              <h3>Codex project snapshot</h3>
+              <p>
+                Generate a local snapshot JSON from your Codex app folders, then import it
+                here to seed project names, repo URLs, paths, latest commits, and Render
+                deploys.
+              </p>
               <div className="system-note">
-                <strong>Phone move:</strong> install the app, then use your phone share
-                sheet from ChatGPT or Safari to drop links or text straight into Quick
-                Capture.
+                <strong>Generator:</strong> <code>npm run snapshot:projects -- "/Users/dumbfounder/Dropbox/codex apps"</code>
+              </div>
+              <label className="file-input">
+                <span>{importBusy ? 'Importing...' : 'Choose project snapshot'}</span>
+                <input
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={(event) => {
+                    void handleImportSnapshot(event.target.files?.[0])
+                    event.currentTarget.value = ''
+                  }}
+                />
+              </label>
+              <p className="system-status">{snapshotImportMessage}</p>
+            </article>
+
+            <article className="system-card">
+              <h3>Phone capture</h3>
+              <p>
+                Share ChatGPT links, notes, or URLs into the app from your phone. They land
+                in Quick Add so you can turn loose AI work into a tracked project.
+              </p>
+              <div className="system-note">
+                <strong>Latest deploy:</strong>{' '}
+                {selectedProject?.productionUrl || latestSelectedDeploy?.url || 'Not set yet.'}
               </div>
             </article>
           </div>

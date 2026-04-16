@@ -1,6 +1,6 @@
 import JSZip from 'jszip'
-import type { SessionEntry, WorkItem } from '../types'
-import { excerpt, generateId, nowIso, truncateText } from './utils'
+import type { AiSessionEntry, Project } from '../types'
+import { buildStableId, excerpt, generateId, nowIso, truncateText } from './utils'
 
 type ExportConversation = {
   id?: string
@@ -90,7 +90,9 @@ const buildLatestSession = (conversation: ExportConversation, messages: FlatMess
   const updatedAt = toIso(reply?.time ?? conversation.update_time ?? conversation.create_time)
 
   return {
-    id: conversation.id ? `chatgpt-${conversation.id}-latest` : generateId(),
+    id: conversation.id
+      ? buildStableId('session', `chatgpt-${conversation.id}-latest`)
+      : generateId(),
     tool: 'ChatGPT',
     prompt: truncateText(lastUserIndex.message.text, 1400),
     result: truncateText(reply?.text ?? '', 1800),
@@ -99,10 +101,10 @@ const buildLatestSession = (conversation: ExportConversation, messages: FlatMess
     createdAt,
     updatedAt,
     source: 'chatgpt-export',
-  } satisfies SessionEntry
+  } satisfies AiSessionEntry
 }
 
-const buildImportedItem = (conversation: ExportConversation): WorkItem | null => {
+const buildImportedProject = (conversation: ExportConversation): Project | null => {
   const messages = flattenConversation(conversation)
   const userMessages = messages.filter((message) => message.role === 'user')
 
@@ -117,29 +119,38 @@ const buildImportedItem = (conversation: ExportConversation): WorkItem | null =>
   }
 
   const firstUserText = userMessages[0]?.text ?? ''
-  const title =
+  const name =
     conversation.title?.trim() ||
     excerpt(firstUserText, 52) ||
     `Imported chat ${conversation.id ?? generateId()}`
   const createdAt = toIso(conversation.create_time)
   const updatedAt = toIso(conversation.update_time ?? latestSession.updatedAt)
+  const stableSeed = conversation.id ?? `${name}-${createdAt}`
 
   return {
-    id: conversation.id ? `chatgpt-${conversation.id}` : generateId(),
-    title,
-    objective: excerpt(firstUserText, 180),
-    status: 'parked',
+    id: buildStableId('project', `chatgpt-${stableSeed}`),
+    name,
+    summary: excerpt(firstUserText, 180),
+    status: 'paused',
+    stage: 'idea',
     priority: 'soon',
     tool: 'ChatGPT',
     tags: ['chatgpt', 'imported'],
     notes: [
       `Imported from a ChatGPT export on ${new Date().toLocaleDateString()}.`,
       `Tracked messages: ${messages.length}.`,
-      'Latest session only is saved so the tracker stays lightweight for phone sync.',
+      'Latest AI exchange only is stored so the tracker stays lightweight for phone sync.',
     ].join(' '),
+    currentFocus: excerpt(latestSession.result, 180),
+    nextAction: latestSession.nextPrompt,
+    repoUrl: '',
+    productionUrl: '',
+    localPath: '',
     createdAt,
     updatedAt,
     lastTouchedAt: updatedAt,
+    features: [],
+    deploys: [],
     sessions: [latestSession],
     source: 'chatgpt-export',
   }
@@ -166,16 +177,16 @@ const loadConversationArray = async (file: File) => {
 
 export const importChatGptFile = async (file: File) => {
   const conversations = await loadConversationArray(file)
-  const imported = conversations
-    .map(buildImportedItem)
-    .filter((item): item is WorkItem => item !== null)
+  const projects = conversations
+    .map(buildImportedProject)
+    .filter((project): project is Project => project !== null)
     .sort(
       (left, right) =>
         new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
     )
 
   return {
-    items: imported,
-    count: imported.length,
+    projects,
+    count: projects.length,
   }
 }
