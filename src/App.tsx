@@ -58,7 +58,6 @@ type ConsoleSettings = {
   activeThreadIdsByProject: Record<string, string>
   messagesByThread: Record<string, ConsoleMessage[]>
   inputDraftsByProject: Record<string, string>
-  threadTitleDraftsByProject: Record<string, string>
 }
 
 type StoredConsoleSettings = Partial<ConsoleSettings> & {
@@ -68,11 +67,10 @@ type StoredConsoleSettings = Partial<ConsoleSettings> & {
 
 const CONSOLE_STORAGE_KEY = 'mybrain-codex-console-v1'
 const CODEXREMOTE_RELAY_URL = 'https://codexremote.onrender.com'
-const NEW_THREAD_VALUE = '__new_thread__'
 
 const tabs: { id: AppTab; label: string }[] = [
   { id: 'chat', label: 'Current' },
-  { id: 'projects', label: 'All Projects' },
+  { id: 'projects', label: 'Projects' },
   { id: 'settings', label: 'Settings' },
   { id: 'memory', label: 'Memory' },
 ]
@@ -144,7 +142,6 @@ const defaultConsoleSettings = (): ConsoleSettings => ({
   activeThreadIdsByProject: {},
   messagesByThread: {},
   inputDraftsByProject: {},
-  threadTitleDraftsByProject: {},
 })
 
 const loadConsoleSettings = () => {
@@ -181,8 +178,6 @@ const loadConsoleSettings = () => {
         parsed.activeThreadIdsByProject ?? legacy.activeThreadIdsByProject,
       messagesByThread: parsed.messagesByThread ?? legacy.messagesByThread,
       inputDraftsByProject: parsed.inputDraftsByProject ?? fallback.inputDraftsByProject,
-      threadTitleDraftsByProject:
-        parsed.threadTitleDraftsByProject ?? fallback.threadTitleDraftsByProject,
     }
   } catch {
     return fallback
@@ -298,18 +293,6 @@ const statusLineFor = (project: Project) =>
     .filter(Boolean)
     .join(' · ')
 
-const projectStateLineFor = (project: Project) =>
-  [
-    `Status: ${optionLabel(PROJECT_STATUS_OPTIONS, project.status)}`,
-    `Stage: ${optionLabel(PROJECT_STAGE_OPTIONS, project.stage)}`,
-    `Priority: ${optionLabel(PRIORITY_OPTIONS, project.priority)}`,
-  ].join(' · ')
-
-const projectOverviewLineFor = (project: Project) =>
-  [`Last engaged ${formatRelative(engagementDateFor(project))}`, deployLineFor(project)]
-    .filter(Boolean)
-    .join(' · ')
-
 function App() {
   const [storedState] = useState(loadState)
   const [initialConsole] = useState(loadConsoleSettings)
@@ -330,9 +313,6 @@ function App() {
   const [inputDraftsByProject, setInputDraftsByProject] = useState(
     initialConsole.inputDraftsByProject,
   )
-  const [threadTitleDraftsByProject, setThreadTitleDraftsByProject] = useState(
-    initialConsole.threadTitleDraftsByProject,
-  )
   const [newProjectDraft, setNewProjectDraft] = useState({ name: '', prompt: '' })
   const [bridgeStatus, setBridgeStatus] = useState('Bridge not checked yet.')
   const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null)
@@ -345,7 +325,6 @@ function App() {
       deferredSearch.trim() ? projectMatches(project, deferredSearch.trim()) : true,
     ),
   )
-  const projectMenuProjects = sortProjects(projects)
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? filteredProjects[0] ?? null
   const projectThreads = useMemo(
@@ -357,15 +336,11 @@ function App() {
     selectedThreadId ? projectThreads.find((thread) => thread.id === selectedThreadId) ?? null : null
   const resolvedThreadId = activeThread?.id ?? ''
   const activeMessages = resolvedThreadId ? messagesByThread[resolvedThreadId] ?? [] : []
-  const activeSessionId = activeThread?.codexSessionId ?? ''
   const latestSessions = selectedProject ? sortSessions(selectedProject.sessions).slice(0, 5) : []
-  const latestSession = latestSessions[0] ?? null
   const input = selectedProject ? inputDraftsByProject[selectedProject.id] ?? '' : ''
-  const threadTitleDraft = selectedProject
-    ? threadTitleDraftsByProject[selectedProject.id] ?? ''
-    : ''
   const runLog = selectedProject ? runLogsByProject[selectedProject.id] ?? [] : []
-  const selectedStatus = selectedProject ? projectOverviewLineFor(selectedProject) : ''
+  const recentMessages = [...activeMessages].reverse()
+  const recentRunLog = [...runLog].reverse()
   const projectStatusCounts = PROJECT_STATUS_OPTIONS.map((status) => ({
     ...status,
     count: projects.filter((project) => project.status === status.value).length,
@@ -397,14 +372,12 @@ function App() {
       activeThreadIdsByProject,
       messagesByThread,
       inputDraftsByProject,
-      threadTitleDraftsByProject,
     })
   }, [
     activeThreadIdsByProject,
     bridge,
     inputDraftsByProject,
     messagesByThread,
-    threadTitleDraftsByProject,
     threadsByProject,
     wrapper,
   ])
@@ -459,22 +432,28 @@ function App() {
     }))
   }
 
-  const setProjectThreadTitleDraft = (projectId: string, value: string) => {
-    setThreadTitleDraftsByProject((current) => ({
-      ...current,
-      [projectId]: value,
-    }))
-  }
+  const ensureProjectThread = (project: Project, titleSeed = 'Codex UI selected thread') => {
+    const currentThreads = threadsByProject[project.id] ?? []
+    const selectedThread = currentThreads.find(
+      (thread) => thread.id === activeThreadIdsByProject[project.id],
+    )
+    const existingThread = selectedThread ?? currentThreads[0]
 
-  const addThread = (project: Project, titleSeed: string) => {
+    if (existingThread) {
+      setActiveThreadIdsByProject((current) => ({
+        ...current,
+        [project.id]: existingThread.id,
+      }))
+      return existingThread
+    }
+
     const thread = makeThread(project, titleSeed)
 
     setThreadsByProject((current) => ({
       ...current,
-      [project.id]: [...(current[project.id] ?? []), thread],
+      [project.id]: [thread],
     }))
     setActiveThreadIdsByProject((current) => ({ ...current, [project.id]: thread.id }))
-    setProjectThreadTitleDraft(project.id, '')
 
     return thread
   }
@@ -524,7 +503,7 @@ function App() {
     }
 
     const project = makeManualProject(newProjectDraft.name, newProjectDraft.prompt)
-    const thread = makeThread(project, newProjectDraft.prompt)
+    const thread = makeThread(project, 'Codex UI selected thread')
 
     setProjects((currentProjects) => sortProjects([project, ...currentProjects]))
     setThreadsByProject((current) => ({ ...current, [project.id]: [thread] }))
@@ -572,15 +551,6 @@ function App() {
       ...current,
       [projectId]: [...(current[projectId] ?? []).slice(-8), line],
     }))
-  }
-
-  const handleNewThread = () => {
-    if (!selectedProject) {
-      return
-    }
-
-    addThread(selectedProject, threadTitleDraft || 'New Codex chat')
-    setActiveTab('chat')
   }
 
   const handleBridgeHealth = async () => {
@@ -713,7 +683,9 @@ function App() {
 
     const rawPrompt = input.trim()
     const startedAt = nowIso()
-    const thread = activeThread ?? addThread(selectedProject, threadTitleDraft || rawPrompt)
+    const thread = activeThread ?? ensureProjectThread(selectedProject)
+    const isRelayMode = bridge.mode === 'codexremote-relay'
+    const threadSessionId = thread.codexSessionId
 
     if (!bridge.url.trim()) {
       const message = 'Add a bridge URL before sending to Codex.'
@@ -726,8 +698,8 @@ function App() {
       return
     }
 
-    if (!selectedProject.localPath && !activeSessionId) {
-      const message = 'This project needs a local path before a new Codex thread can start.'
+    if (!isRelayMode && !selectedProject.localPath && !threadSessionId) {
+      const message = 'This project needs a local path before Codex can run locally.'
       appendMessages(thread.id, [
         makeMessage(selectedProject.id, 'user', rawPrompt),
         makeMessage(selectedProject.id, 'system', message),
@@ -772,7 +744,7 @@ function App() {
           prompt: sentPrompt,
           projectId: selectedProject.id,
           projectName: selectedProject.name,
-          sessionId: thread.codexSessionId,
+          sessionId: threadSessionId,
         },
         (streamEvent) => {
           if (streamEvent.type === 'assistant') {
@@ -812,116 +784,8 @@ function App() {
 
   const chatTab = (
     <section className="main-surface">
-      <div className="main-heading">
-        <div>
-          <p className="eyebrow">Current Work</p>
-          <h2>
-            {selectedProject?.currentFocus ||
-              selectedProject?.nextAction ||
-              selectedProject?.summary ||
-              'Choose or create a project'}
-          </h2>
-        </div>
-        <span className={bridgeHealth ? 'status-pill online' : 'status-pill'}>{bridgeState}</span>
-      </div>
-
       {selectedProject ? (
         <>
-          <div className="quick-links">
-            <span>{projectStateLineFor(selectedProject) || 'No project status set'}</span>
-            {selectedProject.repoUrl ? (
-              <a href={selectedProject.repoUrl} target="_blank" rel="noreferrer">
-                Repo
-              </a>
-            ) : null}
-            {selectedProject.productionUrl ? (
-              <a href={selectedProject.productionUrl} target="_blank" rel="noreferrer">
-                Live
-              </a>
-            ) : null}
-            {selectedProject.localPath ? <span>{selectedProject.localPath}</span> : null}
-          </div>
-
-          <div className="thread-bar">
-            <label className="field thread-select">
-              <span>Codex thread</span>
-              <select
-                value={activeThread?.id ?? NEW_THREAD_VALUE}
-                onChange={(event) => {
-                  if (event.target.value === NEW_THREAD_VALUE) {
-                    handleNewThread()
-                    return
-                  }
-
-                  setActiveThreadIdsByProject((current) => ({
-                    ...current,
-                    [selectedProject.id]: event.target.value,
-                  }))
-                }}
-              >
-                <option value={NEW_THREAD_VALUE}>New Codex chat</option>
-                {projectThreads.map((thread) => (
-                  <option key={thread.id} value={thread.id}>
-                    {thread.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field topic-title">
-              <span>New thread label</span>
-              <input
-                value={threadTitleDraft}
-                onChange={(event) =>
-                  setProjectThreadTitleDraft(selectedProject.id, event.target.value)
-                }
-                placeholder="Optional"
-              />
-            </label>
-            <button type="button" className="secondary-button" onClick={handleNewThread}>
-              <span aria-hidden="true">＋</span>
-              New Chat
-            </button>
-          </div>
-
-          <div className="message-list">
-            {activeMessages.length === 0 ? (
-              <div className="empty-state">
-                <p>No messages in this Codex thread.</p>
-              </div>
-            ) : (
-              activeMessages.map((message) => (
-                <article key={message.id} className={`message message--${message.role}`}>
-                  <div className="message-meta">
-                    <span>{message.role}</span>
-                    <time dateTime={message.createdAt}>{formatDateTime(message.createdAt)}</time>
-                  </div>
-                  <p>{message.text || (message.role === 'assistant' ? 'Codex is working...' : '')}</p>
-                </article>
-              ))
-            )}
-          </div>
-
-          {runLog.length ? (
-            <div className="run-log">
-              {runLog.map((line, index) => (
-                <span key={`${line}-${index}`}>{line}</span>
-              ))}
-            </div>
-          ) : null}
-
-          {latestSession ? (
-            <section className="last-run-panel">
-              <div>
-                <span>Last prompt</span>
-                <p>{latestSession.prompt}</p>
-              </div>
-              <div>
-                <span>Last result</span>
-                <p>{latestSession.result || 'No result stored yet.'}</p>
-              </div>
-            </section>
-          ) : null}
-
           <form className="composer" onSubmit={handleSend}>
             <textarea
               value={input}
@@ -930,17 +794,54 @@ function App() {
               rows={4}
             />
             <div className="composer-actions">
-              <span>{activeThread ? activeThread.title : 'New Codex chat'}</span>
               <button type="submit" className="primary-button" disabled={runBusy || !input.trim()}>
                 <span aria-hidden="true">↵</span>
                 {runBusy ? 'Running' : 'Send'}
               </button>
             </div>
           </form>
+
+          <section className="activity-panel" aria-label="Activity">
+            <div className="activity-heading">
+              <h2>Activity</h2>
+              <span className={bridgeHealth ? 'status-pill online' : 'status-pill'}>
+                {bridgeState}
+              </span>
+            </div>
+
+            {recentRunLog.length ? (
+              <div className="run-log">
+                {recentRunLog.map((line, index) => (
+                  <span key={`${line}-${index}`}>{line}</span>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="message-list">
+              {recentMessages.length === 0 ? (
+                <div className="empty-state">
+                  <p>No activity yet.</p>
+                </div>
+              ) : (
+                recentMessages.map((message) => (
+                  <article key={message.id} className={`message message--${message.role}`}>
+                    <div className="message-meta">
+                      <span>{message.role}</span>
+                      <time dateTime={message.createdAt}>{formatDateTime(message.createdAt)}</time>
+                    </div>
+                    <p>
+                      {message.text ||
+                        (message.role === 'assistant' ? 'Codex is working...' : '')}
+                    </p>
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
         </>
       ) : (
         <section className="empty-state">
-          <p>Create a project or refresh from the bridge to start.</p>
+          <p>No project selected.</p>
         </section>
       )}
     </section>
@@ -953,15 +854,6 @@ function App() {
           <p className="eyebrow">All Projects</p>
           <h2>{filteredProjects.length} visible</h2>
         </div>
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={handleRefreshProjects}
-          disabled={projectBusy}
-        >
-          <span aria-hidden="true">↻</span>
-          {projectBusy ? 'Scanning' : 'Refresh'}
-        </button>
       </div>
       <div className="status-overview" aria-label="Project status overview">
         {projectStatusCounts.map((status) => (
@@ -1305,34 +1197,17 @@ function App() {
   const memoryTab = (
     <section className="memory-grid">
       <section className="tab-section">
-        <p className="eyebrow">Codex Threads</p>
-        <h2>{projectThreads.length} threads</h2>
+        <p className="eyebrow">Codex UI Thread</p>
+        <h2>{activeThread?.title ?? 'Selected in Codex'}</h2>
         <div className="thread-list">
-          <button type="button" className="thread-card" onClick={handleNewThread}>
-            <strong>New Codex chat</strong>
-            <span>Start clean in Codex</span>
-          </button>
-          {projectThreads.map((thread) => (
-            <button
-              key={thread.id}
-              type="button"
-              className={thread.id === activeThread?.id ? 'thread-card selected' : 'thread-card'}
-              onClick={() => {
-                if (!selectedProject) {
-                  return
-                }
-
-                setActiveThreadIdsByProject((current) => ({
-                  ...current,
-                  [selectedProject.id]: thread.id,
-                }))
-                setActiveTab('chat')
-              }}
-            >
-              <strong>{thread.title}</strong>
-              <span>{thread.codexSessionId ? excerpt(thread.codexSessionId, 22) : 'No Codex thread yet'}</span>
-            </button>
-          ))}
+          <article className="thread-card selected">
+            <strong>{activeThread?.title ?? 'Codex UI selected thread'}</strong>
+            <span>
+              {activeThread?.codexSessionId
+                ? excerpt(activeThread.codexSessionId, 42)
+                : 'No Codex thread reported yet.'}
+            </span>
+          </article>
         </div>
       </section>
 
@@ -1403,39 +1278,18 @@ function App() {
       <header className="topbar">
         <div className="topbar-title">
           <p className="eyebrow">MyBrain</p>
-          <h1>{selectedProject?.name ?? 'Project console'}</h1>
-          <p>{selectedProject ? selectedStatus || 'No status set' : `${projects.length} projects`}</p>
+          <h1>{selectedProject?.name ?? 'MyBrain'}</h1>
         </div>
-        <div className="topbar-actions">
-          <label className="field compact-field">
-            <span>Project</span>
-            <select
-              value={selectedProject?.id ?? ''}
-              onChange={(event) => {
-                setSelectedProjectId(event.target.value)
-                setActiveTab('chat')
-              }}
-            >
-              {projects.length === 0 ? (
-                <option value="">No projects yet</option>
-              ) : null}
-              {projectMenuProjects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name} - {formatRelative(engagementDateFor(project))}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={handleRefreshProjects}
-            disabled={projectBusy}
-          >
-            <span aria-hidden="true">↻</span>
-            {projectBusy ? 'Scanning' : 'Refresh'}
-          </button>
-        </div>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={handleRefreshProjects}
+          disabled={projectBusy}
+          aria-label={projectBusy ? 'Refreshing projects' : 'Refresh projects'}
+          title={projectBusy ? 'Refreshing projects' : 'Refresh projects'}
+        >
+          <span aria-hidden="true">↻</span>
+        </button>
       </header>
 
       <nav className="tabs" aria-label="MyBrain sections">

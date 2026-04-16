@@ -148,9 +148,6 @@ const snapshotText = (snapshot: RelaySnapshot) =>
 const snapshotThreadTitle = (snapshot: RelaySnapshot) =>
   snapshot.result?.thread || snapshot.threadTitle || ''
 
-const looksLikeCodexThreadId = (value: string) =>
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
-
 const streamRelayEvents = async (
   bridge: BridgeConfig,
   requestId: string,
@@ -253,8 +250,6 @@ const streamCodexRemoteRelayTurn = async (
   body: CodexTurnBody,
   onEvent: (event: BridgeStreamEvent) => void,
 ) => {
-  const relayThreadTitle =
-    body.sessionId && !looksLikeCodexThreadId(body.sessionId) ? body.sessionId : ''
   const queued = await bridgeJson<{ requestId: string; message: string }>(
     bridge.url,
     bridge.token,
@@ -263,11 +258,10 @@ const streamCodexRemoteRelayTurn = async (
       method: 'POST',
       body: JSON.stringify({
         text: body.prompt,
-        // Existing CodexRemote agents preserve the selected Codex thread only
-        // when the prompt uses their saved project/thread state.
-        projectPath: relayThreadTitle ? '' : body.cwd,
+        // Let CodexRemote use its saved selected project/thread so MyBrain
+        // mirrors the Codex UI instead of opening a new chat by path.
+        projectPath: '',
         projectName: body.projectName || body.projectId,
-        threadTitle: relayThreadTitle || undefined,
       }),
     },
   )

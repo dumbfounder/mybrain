@@ -23,6 +23,7 @@
 body {
   margin: 0;
   min-width: 320px;
+  overflow-x: hidden;
   color: var(--ink);
   background: var(--bg);
 }
@@ -50,6 +51,7 @@ a {
 
 .app-shell {
   width: min(1120px, calc(100vw - 24px));
+  min-width: 0;
   margin: 0 auto;
   padding: 12px 0 32px;
 }
@@ -63,8 +65,13 @@ a {
   gap: 16px;
   align-items: center;
   padding: 12px 0;
+  min-width: 0;
   background: rgba(244, 246, 248, 0.94);
   backdrop-filter: blur(16px);
+}
+
+.topbar > .icon-button {
+  align-self: center;
 }
 
 .topbar-title {
@@ -116,7 +123,8 @@ a {
 .section-heading,
 .main-heading,
 .composer-actions,
-.thread-bar {
+.thread-bar,
+.activity-heading {
   display: flex;
   gap: 10px;
   align-items: center;
@@ -124,7 +132,12 @@ a {
 }
 
 .topbar-actions {
-  min-width: min(520px, 48vw);
+  min-width: 0;
+  justify-content: end;
+}
+
+.composer-actions {
+  justify-content: end;
 }
 
 .eyebrow,
@@ -142,9 +155,11 @@ a {
 .field {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .compact-field {
+  flex: 1 1 360px;
   min-width: min(360px, 36vw);
 }
 
@@ -152,6 +167,8 @@ input,
 textarea,
 select {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 44px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -175,7 +192,8 @@ summary:focus-visible {
 }
 
 .primary-button,
-.secondary-button {
+.secondary-button,
+.icon-button {
   display: inline-flex;
   min-height: 44px;
   align-items: center;
@@ -199,6 +217,18 @@ summary:focus-visible {
   color: var(--ink);
 }
 
+.icon-button {
+  width: 44px;
+  min-width: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 1.05rem;
+  font-weight: 850;
+}
+
 .tabs {
   position: sticky;
   top: 86px;
@@ -216,12 +246,17 @@ summary:focus-visible {
 }
 
 .tab {
+  min-width: 0;
   min-height: 42px;
+  overflow: hidden;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
   font-weight: 800;
+  padding: 0 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tab.selected {
@@ -232,12 +267,14 @@ summary:focus-visible {
 .tab-panel {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .main-surface,
 .tab-section {
   display: grid;
   gap: 14px;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel);
@@ -314,6 +351,7 @@ summary:focus-visible {
   display: grid;
   align-content: start;
   gap: 10px;
+  min-width: 0;
   min-height: min(34vh, 360px);
   padding: 10px;
   border: 1px solid var(--line);
@@ -323,6 +361,7 @@ summary:focus-visible {
 
 .message {
   max-width: min(88%, 760px);
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
@@ -348,6 +387,7 @@ summary:focus-visible {
 
 .message-meta {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 8px;
@@ -361,6 +401,7 @@ summary:focus-visible {
 .run-log {
   display: grid;
   gap: 4px;
+  min-width: 0;
   max-height: 118px;
   overflow: auto;
   border: 1px solid var(--line);
@@ -370,6 +411,10 @@ summary:focus-visible {
   color: #d7efe7;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.78rem;
+}
+
+.run-log span {
+  overflow-wrap: anywhere;
 }
 
 .last-run-panel {
@@ -393,12 +438,28 @@ summary:focus-visible {
 .composer {
   display: grid;
   gap: 10px;
-  margin-top: auto;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: var(--shadow);
+}
+
+.activity-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.activity-heading {
+  min-width: 0;
+}
+
+.activity-heading h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.15;
 }
 
 .composer textarea {
@@ -601,15 +662,15 @@ summary:focus-visible {
   }
 
   .topbar {
-    grid-template-columns: 1fr;
-    gap: 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
   }
 
   .topbar-title h1 {
-    white-space: normal;
+    font-size: 1.65rem;
+    white-space: nowrap;
   }
 
-  .topbar-actions,
   .section-heading,
   .main-heading,
   .thread-bar {
@@ -617,14 +678,22 @@ summary:focus-visible {
     flex-direction: column;
   }
 
-  .topbar-actions,
+  .topbar-actions {
+    width: 100%;
+    align-items: end;
+    flex-direction: row;
+  }
+
   .compact-field {
     min-width: 0;
-    width: 100%;
+  }
+
+  .compact-field {
+    width: auto;
   }
 
   .tabs {
-    top: 154px;
+    top: 86px;
     overflow-x: auto;
   }
 
