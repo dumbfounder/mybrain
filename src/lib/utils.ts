@@ -176,39 +176,18 @@ const safeTime = (value?: string) => {
 export const projectEngagementTime = (project: Project) =>
   Math.max(
     safeTime(project.lastTouchedAt),
-    safeTime(project.updatedAt),
     ...project.sessions.map((session) => safeTime(session.updatedAt)),
     ...project.features.map((feature) => safeTime(feature.updatedAt)),
     ...project.deploys.map((deploy) => safeTime(deploy.updatedAt)),
+    safeTime(project.createdAt),
   )
 
 export const sortProjects = (projects: Project[]) =>
   [...projects].sort((left, right) => {
-    const priorityRank = { now: 0, soon: 1, later: 2 }
-    const statusRank = { active: 0, blocked: 1, paused: 2, done: 3 }
-    const stageRank = { live: 0, building: 1, testing: 2, maintaining: 3, idea: 4 }
     const engagementDelta = projectEngagementTime(right) - projectEngagementTime(left)
 
     if (engagementDelta !== 0) {
       return engagementDelta
-    }
-
-    const priorityDelta = priorityRank[left.priority] - priorityRank[right.priority]
-
-    if (priorityDelta !== 0) {
-      return priorityDelta
-    }
-
-    const statusDelta = statusRank[left.status] - statusRank[right.status]
-
-    if (statusDelta !== 0) {
-      return statusDelta
-    }
-
-    const stageDelta = stageRank[left.stage] - stageRank[right.stage]
-
-    if (stageDelta !== 0) {
-      return stageDelta
     }
 
     return left.name.localeCompare(right.name)

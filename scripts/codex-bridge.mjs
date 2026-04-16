@@ -71,6 +71,32 @@ const readPackageInfo = (directory) => {
   }
 }
 
+const safeTime = (value) => {
+  const time = value ? new Date(value).getTime() : 0
+
+  return Number.isFinite(time) ? time : 0
+}
+
+const newestIso = (...values) => {
+  const newest = Math.max(...values.map(safeTime))
+
+  return newest > 0 ? new Date(newest).toISOString() : ''
+}
+
+const latestWorkingTreeActivityAt = (directory) => {
+  const raw = run('git', ['-C', directory, 'ls-files', '-m', '-o', '--exclude-standard', '-z'])
+  const files = raw.split('\0').filter(Boolean)
+  const newest = files.reduce((latest, file) => {
+    try {
+      return Math.max(latest, fs.statSync(path.join(directory, file)).mtimeMs)
+    } catch {
+      return latest
+    }
+  }, 0)
+
+  return newest > 0 ? new Date(newest).toISOString() : ''
+}
+
 const loadRenderServices = () => {
   const raw = run('render', ['services', '--output', 'json'], { timeout: 16000 })
 
@@ -150,6 +176,11 @@ const buildSnapshot = () => {
     const lastCommitMessage = run('git', ['-C', directory, 'log', '-1', '--format=%s'])
     const lastCommitDate = run('git', ['-C', directory, 'log', '-1', '--format=%cI'])
     const services = repoUrl ? renderByRepo.get(repoUrl) || [] : []
+    const lastActivityAt = newestIso(
+      latestWorkingTreeActivityAt(directory),
+      lastCommitDate,
+      ...services.map((service) => service.lastDeployAt),
+    )
     const name = path.basename(directory)
 
     return {
@@ -162,6 +193,7 @@ const buildSnapshot = () => {
       lastCommitHash,
       lastCommitMessage,
       lastCommitDate,
+      lastActivityAt,
       tags: [
         repoUrl ? 'git' : '',
         packageInfo.name ? 'package' : '',

@@ -40,7 +40,7 @@ import type {
   PromptWrapper,
 } from './types'
 
-type AppTab = 'chat' | 'projects' | 'settings' | 'memory'
+type AppTab = 'chat' | 'queue' | 'projects' | 'settings' | 'memory'
 
 type ConsoleThread = {
   id: string
@@ -51,13 +51,27 @@ type ConsoleThread = {
   updatedAt: string
 }
 
+type QueuedPromptStatus = 'queued' | 'running' | 'failed'
+
+type QueuedPrompt = {
+  id: string
+  projectId: string
+  text: string
+  status: QueuedPromptStatus
+  createdAt: string
+  updatedAt: string
+  error?: string
+}
+
 type ConsoleSettings = {
   bridge: BridgeConfig
   wrapper: PromptWrapper
+  selectedProjectId: string
   threadsByProject: Record<string, ConsoleThread[]>
   activeThreadIdsByProject: Record<string, string>
   messagesByThread: Record<string, ConsoleMessage[]>
   inputDraftsByProject: Record<string, string>
+  queuedPromptsByProject: Record<string, QueuedPrompt[]>
 }
 
 type StoredConsoleSettings = Partial<ConsoleSettings> & {
@@ -70,6 +84,7 @@ const CODEXREMOTE_RELAY_URL = 'https://codexremote.onrender.com'
 
 const tabs: { id: AppTab; label: string }[] = [
   { id: 'chat', label: 'Current' },
+  { id: 'queue', label: 'Queue' },
   { id: 'projects', label: 'Projects' },
   { id: 'settings', label: 'Settings' },
   { id: 'memory', label: 'Memory' },
@@ -138,10 +153,12 @@ const defaultConsoleSettings = (): ConsoleSettings => ({
     model: '',
   },
   wrapper: defaultPromptWrapper(),
+  selectedProjectId: '',
   threadsByProject: {},
   activeThreadIdsByProject: {},
   messagesByThread: {},
   inputDraftsByProject: {},
+  queuedPromptsByProject: {},
 })
 
 const loadConsoleSettings = () => {
@@ -173,11 +190,16 @@ const loadConsoleSettings = () => {
     return {
       bridge,
       wrapper: { ...fallback.wrapper, ...parsed.wrapper },
+      selectedProjectId:
+        typeof parsed.selectedProjectId === 'string'
+          ? parsed.selectedProjectId
+          : fallback.selectedProjectId,
       threadsByProject: parsed.threadsByProject ?? legacy.threadsByProject,
       activeThreadIdsByProject:
         parsed.activeThreadIdsByProject ?? legacy.activeThreadIdsByProject,
       messagesByThread: parsed.messagesByThread ?? legacy.messagesByThread,
       inputDraftsByProject: parsed.inputDraftsByProject ?? fallback.inputDraftsByProject,
+      queuedPromptsByProject: parsed.queuedPromptsByProject ?? fallback.queuedPromptsByProject,
     }
   } catch {
     return fallback
@@ -296,10 +318,15 @@ const statusLineFor = (project: Project) =>
 function App() {
   const [storedState] = useState(loadState)
   const [initialConsole] = useState(loadConsoleSettings)
-  const [projects, setProjects] = useState<Project[]>(sortProjects(storedState.projects))
-  const [selectedProjectId, setSelectedProjectId] = useState(
-    sortProjects(storedState.projects)[0]?.id ?? '',
-  )
+  const [projects, setProjects] = useState<Project[]>(() => sortProjects(storedState.projects))
+  const [selectedProjectId, setSelectedProjectId] = useState(() => {
+    const sorted = sortProjects(storedState.projects)
+    const savedId = initialConsole.selectedProjectId
+
+    return savedId && sorted.some((project) => project.id === savedId)
+      ? savedId
+      : sorted[0]?.id ?? ''
+  })
   const [activeTab, setActiveTab] = useState<AppTab>('chat')
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
@@ -313,6 +340,9 @@ function App() {
   const [inputDraftsByProject, setInputDraftsByProject] = useState(
     initialConsole.inputDraftsByProject,
   )
+  const [queuedPromptsByProject, setQueuedPromptsByProject] = useState(
+    initialConsole.queuedPromptsByProject,
+  )
   const [newProjectDraft, setNewProjectDraft] = useState({ name: '', prompt: '' })
   const [bridgeStatus, setBridgeStatus] = useState('Bridge not checked yet.')
   const [bridgeHealth, setBridgeHealth] = useState<BridgeHealth | null>(null)
@@ -320,10 +350,15 @@ function App() {
   const [projectBusy, setProjectBusy] = useState(false)
   const [runLogsByProject, setRunLogsByProject] = useState<Record<string, string[]>>({})
 
-  const filteredProjects = sortProjects(
-    projects.filter((project) =>
-      deferredSearch.trim() ? projectMatches(project, deferredSearch.trim()) : true,
-    ),
+  const sortedProjects = useMemo(() => sortProjects(projects), [projects])
+  const filteredProjects = useMemo(
+    () =>
+      sortProjects(
+        sortedProjects.filter((project) =>
+          deferredSearch.trim() ? projectMatches(project, deferredSearch.trim()) : true,
+        ),
+      ),
+    [deferredSearch, sortedProjects],
   )
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? filteredProjects[0] ?? null
@@ -336,6 +371,12 @@ function App() {
     selectedThreadId ? projectThreads.find((thread) => thread.id === selectedThreadId) ?? null : null
   const resolvedThreadId = activeThread?.id ?? ''
   const activeMessages = resolvedThreadId ? messagesByThread[resolvedThreadId] ?? [] : []
+  const queuedPrompts = selectedProject ? queuedPromptsByProject[selectedProject.id] ?? [] : []
+  const totalQueuedPrompts = Object.values(queuedPromptsByProject).reduce(
+    (count, projectQueue) => count + projectQueue.length,
+    0,
+  )
+  const runnableQueuedPrompts = queuedPrompts.filter((item) => item.status !== 'running')
   const latestSessions = selectedProject ? sortSessions(selectedProject.sessions).slice(0, 5) : []
   const input = selectedProject ? inputDraftsByProject[selectedProject.id] ?? '' : ''
   const runLog = selectedProject ? runLogsByProject[selectedProject.id] ?? [] : []
@@ -368,16 +409,20 @@ function App() {
     saveConsoleSettings({
       bridge,
       wrapper,
+      selectedProjectId,
       threadsByProject,
       activeThreadIdsByProject,
       messagesByThread,
       inputDraftsByProject,
+      queuedPromptsByProject,
     })
   }, [
     activeThreadIdsByProject,
     bridge,
     inputDraftsByProject,
     messagesByThread,
+    queuedPromptsByProject,
+    selectedProjectId,
     threadsByProject,
     wrapper,
   ])
@@ -423,6 +468,31 @@ function App() {
         ),
       ),
     )
+  }
+
+  const touchProject = (projectId: string, timestamp = nowIso()) => {
+    setProjects((currentProjects) =>
+      sortProjects(
+        currentProjects.map((project) =>
+          project.id === projectId
+            ? {
+                ...project,
+                updatedAt: timestamp,
+                lastTouchedAt: timestamp,
+              }
+            : project,
+        ),
+      ),
+    )
+  }
+
+  const handleProjectSelect = (projectId: string) => {
+    if (!projectId) {
+      return
+    }
+
+    setSelectedProjectId(projectId)
+    setActiveTab('chat')
   }
 
   const setProjectInput = (projectId: string, value: string) => {
@@ -597,15 +667,18 @@ function App() {
         '/api/projects',
       )
       const imported = importProjectSnapshotValue(snapshot)
+      const mergedProjects = mergeProjectCollections(imported.projects, projects)
 
       startTransition(() => {
-        setProjects((currentProjects) =>
-          mergeProjectCollections(imported.projects, currentProjects),
-        )
+        setProjects(mergedProjects)
       })
 
-      if (imported.projects[0]) {
-        setSelectedProjectId(imported.projects[0].id)
+      if (
+        mergedProjects[0] &&
+        (!selectedProjectId ||
+          !mergedProjects.some((project) => project.id === selectedProjectId))
+      ) {
+        setSelectedProjectId(mergedProjects[0].id)
       }
 
       const sourceLabel =
@@ -674,54 +747,50 @@ function App() {
     }
   }
 
-  const handleSend = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-
-    if (!selectedProject || runBusy || !hasText(input)) {
-      return
-    }
-
-    const rawPrompt = input.trim()
+  const runCodexPrompt = async (
+    project: Project,
+    rawPrompt: string,
+    thread: ConsoleThread,
+  ): Promise<{ success: boolean; thread: ConsoleThread; error: string }> => {
     const startedAt = nowIso()
-    const thread = activeThread ?? ensureProjectThread(selectedProject)
     const isRelayMode = bridge.mode === 'codexremote-relay'
-    const threadSessionId = thread.codexSessionId
+    let nextThread = thread
+    let assistantText = ''
+    let streamHadError = false
+    let errorText = ''
+
+    touchProject(project.id, startedAt)
 
     if (!bridge.url.trim()) {
       const message = 'Add a bridge URL before sending to Codex.'
       appendMessages(thread.id, [
-        makeMessage(selectedProject.id, 'user', rawPrompt),
-        makeMessage(selectedProject.id, 'system', message),
+        makeMessage(project.id, 'user', rawPrompt),
+        makeMessage(project.id, 'system', message),
       ])
-      recordCodexSession(selectedProject.id, rawPrompt, message, startedAt)
-      setProjectInput(selectedProject.id, '')
-      return
+      recordCodexSession(project.id, rawPrompt, message, startedAt)
+      return { success: false, thread: nextThread, error: message }
     }
 
-    if (!isRelayMode && !selectedProject.localPath && !threadSessionId) {
+    if (!isRelayMode && !project.localPath && !nextThread.codexSessionId) {
       const message = 'This project needs a local path before Codex can run locally.'
       appendMessages(thread.id, [
-        makeMessage(selectedProject.id, 'user', rawPrompt),
-        makeMessage(selectedProject.id, 'system', message),
+        makeMessage(project.id, 'user', rawPrompt),
+        makeMessage(project.id, 'system', message),
       ])
-      recordCodexSession(selectedProject.id, rawPrompt, message, startedAt)
-      setProjectInput(selectedProject.id, '')
-      return
+      recordCodexSession(project.id, rawPrompt, message, startedAt)
+      return { success: false, thread: nextThread, error: message }
     }
 
-    const sentPrompt = buildCodexPrompt(rawPrompt, selectedProject, wrapper)
+    const sentPrompt = buildCodexPrompt(rawPrompt, project, wrapper)
     const assistantId = generateId()
-    let assistantText = ''
 
-    if (activeThread) {
-      updateThread(selectedProject.id, thread.id, {})
-    }
+    updateThread(project.id, thread.id, {})
 
     appendMessages(thread.id, [
-      makeMessage(selectedProject.id, 'user', rawPrompt, { sentPrompt }),
+      makeMessage(project.id, 'user', rawPrompt, { sentPrompt }),
       {
         id: assistantId,
-        projectId: selectedProject.id,
+        projectId: project.id,
         role: 'assistant',
         text: '',
         createdAt: nowIso(),
@@ -729,22 +798,20 @@ function App() {
         sentPrompt,
       },
     ])
-    setProjectInput(selectedProject.id, '')
-    setRunLogsByProject((current) => ({ ...current, [selectedProject.id]: [] }))
+    setRunLogsByProject((current) => ({ ...current, [project.id]: [] }))
 
     try {
-      setRunBusy(true)
       await streamCodexTurn(
         {
           ...bridge,
           url: normalizeBridgeUrl(bridge.url),
         },
         {
-          cwd: selectedProject.localPath,
+          cwd: project.localPath,
           prompt: sentPrompt,
-          projectId: selectedProject.id,
-          projectName: selectedProject.name,
-          sessionId: threadSessionId,
+          projectId: project.id,
+          projectName: project.name,
+          sessionId: nextThread.codexSessionId,
         },
         (streamEvent) => {
           if (streamEvent.type === 'assistant') {
@@ -755,18 +822,184 @@ function App() {
             assistantText = streamEvent.message
           }
 
-          handleStreamEvent(selectedProject, thread.id, assistantId, streamEvent)
+          if (streamEvent.type === 'error') {
+            streamHadError = true
+            errorText = streamEvent.message
+          }
+
+          if (streamEvent.type === 'exit' && streamEvent.code && streamEvent.code !== 0) {
+            streamHadError = true
+            errorText = errorText || `Codex exited with ${streamEvent.code}.`
+          }
+
+          if (streamEvent.type === 'thread') {
+            nextThread = {
+              ...nextThread,
+              codexSessionId: streamEvent.threadId,
+              ...(streamEvent.title ? { title: excerpt(streamEvent.title, 48) } : {}),
+              updatedAt: nowIso(),
+            }
+          }
+
+          handleStreamEvent(project, thread.id, assistantId, streamEvent)
         },
       )
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not reach the Codex bridge.'
       assistantText = assistantText || message
+      streamHadError = true
+      errorText = message
       updateMessage(thread.id, assistantId, (message) => ({
         ...message,
         text: message.text || assistantText,
       }))
     } finally {
-      recordCodexSession(selectedProject.id, rawPrompt, assistantText, startedAt)
+      recordCodexSession(project.id, rawPrompt, assistantText, startedAt)
+    }
+
+    return {
+      success: !streamHadError,
+      thread: nextThread,
+      error: errorText,
+    }
+  }
+
+  const patchQueuedPrompt = (
+    projectId: string,
+    promptId: string,
+    patch: Partial<QueuedPrompt>,
+  ) => {
+    setQueuedPromptsByProject((current) => ({
+      ...current,
+      [projectId]: (current[projectId] ?? []).map((item) =>
+        item.id === promptId ? { ...item, ...patch, updatedAt: nowIso() } : item,
+      ),
+    }))
+  }
+
+  const removeQueuedPrompt = (projectId: string, promptId: string) => {
+    setQueuedPromptsByProject((current) => ({
+      ...current,
+      [projectId]: (current[projectId] ?? []).filter((item) => item.id !== promptId),
+    }))
+  }
+
+  const handleQueuePrompt = () => {
+    if (!selectedProject || !hasText(input)) {
+      return
+    }
+
+    const timestamp = nowIso()
+    const queuedPrompt: QueuedPrompt = {
+      id: generateId(),
+      projectId: selectedProject.id,
+      text: input.trim(),
+      status: 'queued',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }
+
+    setQueuedPromptsByProject((current) => ({
+      ...current,
+      [selectedProject.id]: [...(current[selectedProject.id] ?? []), queuedPrompt],
+    }))
+    setProjectInput(selectedProject.id, '')
+    touchProject(selectedProject.id, timestamp)
+    addRunLog(selectedProject.id, 'Prompt queued.')
+    setActiveTab('queue')
+  }
+
+  const handleClearQueue = () => {
+    if (!selectedProject || runBusy) {
+      return
+    }
+
+    setQueuedPromptsByProject((current) => ({
+      ...current,
+      [selectedProject.id]: [],
+    }))
+  }
+
+  const handleRunQueuedPrompt = async (promptId?: string) => {
+    if (!selectedProject || runBusy) {
+      return
+    }
+
+    const queuedPrompt =
+      queuedPrompts.find((item) => item.id === promptId) ??
+      queuedPrompts.find((item) => item.status !== 'running')
+
+    if (!queuedPrompt) {
+      return
+    }
+
+    const thread = activeThread ?? ensureProjectThread(selectedProject)
+
+    setRunBusy(true)
+    patchQueuedPrompt(selectedProject.id, queuedPrompt.id, { status: 'running', error: '' })
+
+    try {
+      const result = await runCodexPrompt(selectedProject, queuedPrompt.text, thread)
+
+      if (result.success) {
+        removeQueuedPrompt(selectedProject.id, queuedPrompt.id)
+      } else {
+        patchQueuedPrompt(selectedProject.id, queuedPrompt.id, {
+          status: 'failed',
+          error: result.error || 'Codex run failed.',
+        })
+      }
+    } finally {
+      setRunBusy(false)
+    }
+  }
+
+  const handleRunQueue = async () => {
+    if (!selectedProject || runBusy || !runnableQueuedPrompts.length) {
+      return
+    }
+
+    let thread = activeThread ?? ensureProjectThread(selectedProject)
+
+    setRunBusy(true)
+
+    try {
+      for (const queuedPrompt of runnableQueuedPrompts) {
+        patchQueuedPrompt(selectedProject.id, queuedPrompt.id, { status: 'running', error: '' })
+        const result = await runCodexPrompt(selectedProject, queuedPrompt.text, thread)
+        thread = result.thread
+
+        if (result.success) {
+          removeQueuedPrompt(selectedProject.id, queuedPrompt.id)
+        } else {
+          patchQueuedPrompt(selectedProject.id, queuedPrompt.id, {
+            status: 'failed',
+            error: result.error || 'Codex run failed.',
+          })
+          break
+        }
+      }
+    } finally {
+      setRunBusy(false)
+    }
+  }
+
+  const handleSend = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!selectedProject || runBusy || !hasText(input)) {
+      return
+    }
+
+    const rawPrompt = input.trim()
+    const thread = activeThread ?? ensureProjectThread(selectedProject)
+
+    setProjectInput(selectedProject.id, '')
+    setRunBusy(true)
+
+    try {
+      await runCodexPrompt(selectedProject, rawPrompt, thread)
+    } finally {
       setRunBusy(false)
     }
   }
@@ -782,9 +1015,9 @@ function App() {
     }))
   }
 
-  const chatTab = (
-    <section className="main-surface">
-      {selectedProject ? (
+	  const chatTab = (
+	    <section className="main-surface">
+	      {selectedProject ? (
         <>
           <form className="composer" onSubmit={handleSend}>
             <textarea
@@ -794,6 +1027,15 @@ function App() {
               rows={4}
             />
             <div className="composer-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!input.trim()}
+                onClick={handleQueuePrompt}
+              >
+                <span aria-hidden="true">＋</span>
+                Queue
+              </button>
               <button type="submit" className="primary-button" disabled={runBusy || !input.trim()}>
                 <span aria-hidden="true">↵</span>
                 {runBusy ? 'Running' : 'Send'}
@@ -847,8 +1089,106 @@ function App() {
     </section>
   )
 
-  const projectsTab = (
+  const queueTab = (
     <section className="tab-section">
+      {selectedProject ? (
+        <>
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Queued Prompts</p>
+              <h2>{queuedPrompts.length} in queue</h2>
+            </div>
+            <div className="queue-actions">
+              <span className="muted">{totalQueuedPrompts} total</span>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={runBusy || !runnableQueuedPrompts.length}
+                onClick={() => void handleRunQueuedPrompt()}
+              >
+                <span aria-hidden="true">▶</span>
+                Next
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={runBusy || !runnableQueuedPrompts.length}
+                onClick={() => void handleRunQueue()}
+              >
+                <span aria-hidden="true">↵</span>
+                All
+              </button>
+            </div>
+          </div>
+
+          {queuedPrompts.length ? (
+            <>
+              <div className="queue-list">
+                {queuedPrompts.map((queuedPrompt, index) => (
+                  <article key={queuedPrompt.id} className="queue-item">
+                    <div className="queue-item-main">
+                      <span className={`queue-status queue-status--${queuedPrompt.status}`}>
+                        {queuedPrompt.status}
+                      </span>
+                      <h3>
+                        {index + 1}. {excerpt(queuedPrompt.text, 72)}
+                      </h3>
+                      <time dateTime={queuedPrompt.createdAt}>
+                        {formatDateTime(queuedPrompt.createdAt)}
+                      </time>
+                      <p>{queuedPrompt.text}</p>
+                      {queuedPrompt.error ? <small>{queuedPrompt.error}</small> : null}
+                    </div>
+                    <div className="queue-item-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={runBusy || queuedPrompt.status === 'running'}
+                        onClick={() => void handleRunQueuedPrompt(queuedPrompt.id)}
+                      >
+                        <span aria-hidden="true">▶</span>
+                        Run
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        disabled={runBusy || queuedPrompt.status === 'running'}
+                        onClick={() => removeQueuedPrompt(selectedProject.id, queuedPrompt.id)}
+                        aria-label="Remove queued prompt"
+                        title="Remove queued prompt"
+                      >
+                        <span aria-hidden="true">×</span>
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={runBusy}
+                onClick={handleClearQueue}
+              >
+                <span aria-hidden="true">×</span>
+                Clear queue
+              </button>
+            </>
+          ) : (
+            <section className="empty-state">
+              <p>No queued prompts.</p>
+            </section>
+          )}
+        </>
+      ) : (
+        <section className="empty-state">
+          <p>No project selected.</p>
+        </section>
+	      )}
+	    </section>
+	  )
+
+		  const projectsTab = (
+	    <section className="tab-section">
       <div className="section-heading">
         <div>
           <p className="eyebrow">All Projects</p>
@@ -908,10 +1248,7 @@ function App() {
             key={project.id}
             type="button"
             className={project.id === selectedProject?.id ? 'project-card selected' : 'project-card'}
-            onClick={() => {
-              setSelectedProjectId(project.id)
-              setActiveTab('chat')
-            }}
+            onClick={() => handleProjectSelect(project.id)}
           >
             <span className="project-card-title">{project.name}</span>
             <span>{statusLineFor(project) || 'No status set'}</span>
@@ -1278,7 +1615,28 @@ function App() {
       <header className="topbar">
         <div className="topbar-title">
           <p className="eyebrow">MyBrain</p>
-          <h1>{selectedProject?.name ?? 'MyBrain'}</h1>
+          <div className="project-title-row">
+            <h1>{selectedProject?.name ?? 'MyBrain'}</h1>
+            {sortedProjects.length ? (
+              <label className="project-title-picker">
+                <span className="sr-only">Switch project</span>
+                <span className="project-title-caret" aria-hidden="true" />
+                <select
+                  className="project-title-select"
+                  value={selectedProject?.id ?? ''}
+                  onChange={(event) => handleProjectSelect(event.target.value)}
+                  aria-label="Switch project"
+                >
+                  {!selectedProject ? <option value="">Select project</option> : null}
+                  {sortedProjects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+          </div>
         </div>
         <button
           type="button"
@@ -1300,13 +1658,16 @@ function App() {
             className={activeTab === tab.id ? 'tab selected' : 'tab'}
             onClick={() => setActiveTab(tab.id)}
           >
-            {tab.label}
+            {tab.id === 'queue' && totalQueuedPrompts
+              ? `${tab.label} ${totalQueuedPrompts}`
+              : tab.label}
           </button>
         ))}
       </nav>
 
       <main className="tab-panel">
         {activeTab === 'chat' ? chatTab : null}
+        {activeTab === 'queue' ? queueTab : null}
         {activeTab === 'projects' ? projectsTab : null}
         {activeTab === 'settings' ? settingsTab : null}
         {activeTab === 'memory' ? memoryTab : null}

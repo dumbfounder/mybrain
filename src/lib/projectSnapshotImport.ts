@@ -10,7 +10,6 @@ import {
   buildStableId,
   excerpt,
   normalizeRepoUrl,
-  nowIso,
   sortProjects,
 } from './utils'
 
@@ -54,11 +53,24 @@ const mapDeployStatus = (status?: string): DeployStatus => {
   return 'draft'
 }
 
+const safeTime = (value?: string) => {
+  const time = value ? new Date(value).getTime() : 0
+
+  return Number.isFinite(time) ? time : 0
+}
+
+const newestIso = (...values: Array<string | undefined>) => {
+  const newest = Math.max(...values.map(safeTime))
+
+  return newest > 0 ? new Date(newest).toISOString() : new Date(0).toISOString()
+}
+
 const toProject = (project: SnapshotProject): Project => {
   const repoUrl = normalizeRepoUrl(project.repoUrl ?? '')
   const localPath = project.localPath ?? project.path ?? ''
   const stableSeed = repoUrl || localPath || project.name
-  const timestamp = project.lastCommitDate ?? nowIso()
+  const latestDeployAt = newestIso(...(project.services ?? []).map((service) => service.lastDeployAt))
+  const timestamp = newestIso(project.lastActivityAt, project.lastCommitDate, latestDeployAt)
   const notes = [
     localPath ? `Local path: ${localPath}.` : '',
     project.branch ? `Branch: ${project.branch}.` : '',

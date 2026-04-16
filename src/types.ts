@@ -130,6 +130,7 @@ export type SnapshotProject = {
   lastCommitHash?: string
   lastCommitMessage?: string
   lastCommitDate?: string
+  lastActivityAt?: string
   tags?: string[]
   services?: SnapshotService[]
 }
