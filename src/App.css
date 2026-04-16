@@ -95,6 +95,7 @@ a {
 .thread-card span,
 .fact-list p,
 .message p,
+.last-run-panel p,
 .composer-actions span {
   color: var(--muted);
 }
@@ -105,6 +106,7 @@ a {
 .section-heading h2,
 .fact-list h3,
 .message p,
+.last-run-panel p,
 .empty-state p,
 .muted {
   margin: 0;
@@ -128,6 +130,7 @@ a {
 .eyebrow,
 .field span,
 .prompt-preview span,
+.last-run-panel span,
 .message-meta {
   font-size: 0.72rem;
   font-weight: 700;
@@ -201,7 +204,7 @@ summary:focus-visible {
   top: 86px;
   z-index: 19;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 12px;
   padding: 6px;
@@ -350,6 +353,11 @@ summary:focus-visible {
   margin-bottom: 8px;
 }
 
+.message p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .run-log {
   display: grid;
   gap: 4px;
@@ -362,6 +370,24 @@ summary:focus-visible {
   color: #d7efe7;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.78rem;
+}
+
+.last-run-panel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.last-run-panel p {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
 }
 
 .composer {
@@ -444,6 +470,44 @@ summary:focus-visible {
   gap: 10px;
 }
 
+.status-overview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+}
+
+.status-overview span {
+  display: grid;
+  gap: 2px;
+  min-height: 58px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #f8fafc;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.status-overview strong {
+  color: var(--ink);
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.create-project-form {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.create-project-form textarea {
+  min-height: 96px;
+}
+
 .toggle-grid,
 .fact-list,
 .thread-list {
@@ -512,6 +576,11 @@ summary:focus-visible {
 @media (min-width: 780px) {
   .field-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .create-project-form {
+    grid-template-columns: minmax(180px, 0.75fr) minmax(260px, 1.5fr) auto;
+    align-items: end;
   }
 
   .settings-grid,
