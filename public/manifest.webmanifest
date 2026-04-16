@@ -1,7 +1,7 @@
 {
   "name": "MyBrain",
   "short_name": "MyBrain",
-  "description": "Track AI threads, last prompts, outcomes, and next steps.",
+  "description": "Private mobile tracker for Codex projects, deploys, features, and AI work.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
