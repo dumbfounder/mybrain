@@ -44,11 +44,25 @@ type ConsoleSettings = {
 }
 
 const CONSOLE_STORAGE_KEY = 'mybrain-codex-console-v1'
+const CODEXREMOTE_RELAY_URL = 'https://codexremote.onrender.com'
+
+const isHostedMyBrain = () => {
+  const hostname = window.location.hostname
+
+  return hostname === 'mybrain-ai-tracker.onrender.com' || hostname.includes('github.io')
+}
+
+const defaultBridgeMode = (): BridgeConfig['mode'] =>
+  isHostedMyBrain() ? 'codexremote-relay' : 'auto'
 
 const defaultBridgeUrl = () => {
   const hostname = window.location.hostname
 
-  if (hostname.includes('onrender.com') || hostname.includes('github.io')) {
+  if (isHostedMyBrain()) {
+    return CODEXREMOTE_RELAY_URL
+  }
+
+  if (hostname.includes('onrender.com')) {
     return ''
   }
 
@@ -57,7 +71,7 @@ const defaultBridgeUrl = () => {
 
 const defaultConsoleSettings = (): ConsoleSettings => ({
   bridge: {
-    mode: 'auto',
+    mode: defaultBridgeMode(),
     url: defaultBridgeUrl(),
     token: '',
     sandbox: 'workspace-write',
@@ -79,9 +93,22 @@ const loadConsoleSettings = () => {
     }
 
     const parsed = JSON.parse(raw) as Partial<ConsoleSettings>
+    const parsedBridge = (parsed.bridge ?? {}) as Partial<BridgeConfig>
+    const bridge = { ...fallback.bridge, ...parsedBridge }
+
+    if (!bridge.url.trim() && fallback.bridge.url) {
+      bridge.url = fallback.bridge.url
+    }
+
+    if (
+      fallback.bridge.mode === 'codexremote-relay' &&
+      (!parsedBridge.mode || parsedBridge.mode === 'auto')
+    ) {
+      bridge.mode = fallback.bridge.mode
+    }
 
     return {
-      bridge: { ...fallback.bridge, ...parsed.bridge },
+      bridge,
       wrapper: { ...fallback.wrapper, ...parsed.wrapper },
       messagesByProject: parsed.messagesByProject ?? {},
       sessionIdsByProject: parsed.sessionIdsByProject ?? {},
@@ -277,7 +304,7 @@ function App() {
 
     try {
       setProjectBusy(true)
-      setBridgeStatus('Scanning projects on your Mac...')
+      setBridgeStatus('Loading projects from the bridge...')
       const snapshot = await bridgeJson<LocalProjectSnapshot>(
         bridge.url,
         bridge.token,
@@ -295,7 +322,8 @@ function App() {
         setSelectedProjectId(imported.projects[0].id)
       }
 
-      setBridgeStatus(`Loaded ${imported.count} Codex projects from ${snapshot.basePath}.`)
+      const sourceLabel = snapshot.basePath ?? (snapshot.mode === 'relay' ? 'CodexRemote relay' : 'bridge')
+      setBridgeStatus(`Loaded ${imported.count} Codex projects from ${sourceLabel}.`)
     } catch (error) {
       setBridgeStatus(error instanceof Error ? error.message : 'Project scan failed.')
     } finally {
@@ -536,7 +564,7 @@ function App() {
                 onChange={(event) =>
                   setBridge((current) => ({ ...current, url: event.target.value }))
                 }
-                placeholder="https://your-tunnel.example.com or http://192.168.1.5:8787"
+                placeholder="https://codexremote.onrender.com or http://192.168.1.5:8787"
               />
             </label>
             <label>
@@ -547,7 +575,11 @@ function App() {
                 onChange={(event) =>
                   setBridge((current) => ({ ...current, token: event.target.value }))
                 }
-                placeholder="MYBRAIN_BRIDGE_TOKEN"
+                placeholder={
+                  bridge.mode === 'codexremote-relay'
+                    ? 'CODEXREMOTE_RELAY_TOKEN'
+                    : 'MYBRAIN_BRIDGE_TOKEN'
+                }
               />
             </label>
             <label>

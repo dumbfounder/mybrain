@@ -123,6 +123,8 @@ export type SnapshotProject = {
   description?: string
   repoUrl?: string
   localPath?: string
+  path?: string
+  active?: boolean
   branch?: string
   dirty?: boolean
   lastCommitHash?: string
@@ -134,6 +136,12 @@ export type SnapshotProject = {
 
 export type LocalProjectSnapshot = {
   version: 1
+  mode?: 'local' | 'relay'
+  agent?: {
+    online?: boolean
+    hostname?: string
+    lastSeenAt?: string
+  }
   exportedAt: string
   basePath?: string
   projects: SnapshotProject[]

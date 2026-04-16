@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "snapshot:projects": "node scripts/export-codex-projects.mjs",
-    "bridge": "node scripts/codex-bridge.mjs"
+    "bridge": "node scripts/codex-bridge.mjs",
+    "check:prod-bridge": "node scripts/check-production-bridge.mjs"
   },
   "dependencies": {
     "jszip": "^3.10.1",

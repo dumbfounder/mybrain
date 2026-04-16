@@ -56,10 +56,11 @@ const mapDeployStatus = (status?: string): DeployStatus => {
 
 const toProject = (project: SnapshotProject): Project => {
   const repoUrl = normalizeRepoUrl(project.repoUrl ?? '')
-  const stableSeed = repoUrl || project.localPath || project.name
+  const localPath = project.localPath ?? project.path ?? ''
+  const stableSeed = repoUrl || localPath || project.name
   const timestamp = project.lastCommitDate ?? nowIso()
   const notes = [
-    project.localPath ? `Local path: ${project.localPath}.` : '',
+    localPath ? `Local path: ${localPath}.` : '',
     project.branch ? `Branch: ${project.branch}.` : '',
     project.lastCommitMessage ? `Last commit: ${project.lastCommitMessage}.` : '',
   ]
@@ -86,7 +87,7 @@ const toProject = (project: SnapshotProject): Project => {
     nextAction: '',
     repoUrl,
     productionUrl: project.services?.find((service) => service.url)?.url ?? '',
-    localPath: project.localPath ?? '',
+    localPath,
     createdAt: timestamp,
     updatedAt: timestamp,
     lastTouchedAt: timestamp,
