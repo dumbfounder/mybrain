@@ -138,3 +138,31 @@ export type LocalProjectSnapshot = {
   basePath?: string
   projects: SnapshotProject[]
 }
+
+export type PromptWrapper = {
+  before: string
+  after: string
+  includeProjectContext: boolean
+  requireStatusSummary: boolean
+  requireVerification: boolean
+  protectUserChanges: boolean
+}
+
+export type ConsoleMessageRole = 'user' | 'assistant' | 'system' | 'event'
+
+export type ConsoleMessage = {
+  id: string
+  projectId: string
+  role: ConsoleMessageRole
+  text: string
+  createdAt: string
+  rawPrompt?: string
+  sentPrompt?: string
+}
+
+export type BridgeConfig = {
+  url: string
+  token: string
+  sandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
+  model: string
+}

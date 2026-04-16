@@ -111,8 +111,7 @@ const toProject = (project: SnapshotProject): Project => {
   }
 }
 
-export const importProjectSnapshotFile = async (file: File) => {
-  const parsed = JSON.parse(await file.text()) as LocalProjectSnapshot | SnapshotProject[]
+export const importProjectSnapshotValue = (parsed: LocalProjectSnapshot | SnapshotProject[]) => {
   const projects = Array.isArray(parsed)
     ? parsed
     : Array.isArray(parsed.projects)
@@ -127,4 +126,10 @@ export const importProjectSnapshotFile = async (file: File) => {
     projects: sortProjects(projects.map(toProject)),
     count: projects.length,
   }
+}
+
+export const importProjectSnapshotFile = async (file: File) => {
+  const parsed = JSON.parse(await file.text()) as LocalProjectSnapshot | SnapshotProject[]
+
+  return importProjectSnapshotValue(parsed)
 }

@@ -1,7 +1,7 @@
 {
   "name": "MyBrain",
   "short_name": "MyBrain",
-  "description": "Private mobile tracker for Codex projects, deploys, features, and AI work.",
+  "description": "Private mobile console for Codex projects, prompt wrappers, and real-time local runs.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

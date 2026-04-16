@@ -1,63 +1,55 @@
 # MyBrain
 
-MyBrain is a private mobile-first tracker for Codex projects. Each project stores:
+MyBrain is a private mobile console for Codex projects. The phone UI is built around:
 
-- status, stage, priority, current focus, and next action
-- repo URL, production URL, local path, and notes
-- deploy history
-- feature history
-- AI prompt history
+- a product dropdown at the top
+- a chat composer for the selected local project
+- a customizable prompt wrapper that changes what gets sent to Codex every time
+- project state, deploy context, feature memory, and prior AI notes
+- a local bridge that lets the browser talk to your computer in real time
 
-## What it does
+## Local Bridge
 
-- local-first storage in the browser
-- optional cross-device sync through a private GitHub gist
-- ChatGPT export import from a `.zip` export or `conversations.json`
-- local project snapshot import for Codex folders, git state, and Render services
-- installable PWA with a phone share target
-- GitHub Pages and Render deployment
+The deployed static site cannot directly control your Mac. For real Codex runs, start the bridge on the computer that has your projects and Codex login:
 
-## Local development
+```bash
+npm run build
+MYBRAIN_BRIDGE_TOKEN="pick-a-private-token" npm run bridge -- "/Users/dumbfounder/Dropbox/codex apps"
+```
+
+Then open the app from your phone using one of these paths:
+
+- same Wi-Fi: `http://YOUR_MAC_IP:8787`
+- remote/mobile data: expose port `8787` with a private tunnel such as Tailscale Serve, Cloudflare Tunnel, or ngrok
+- Render-hosted UI: paste your tunnel URL and token into the Bridge panel
+
+The bridge exposes:
+
+- `GET /api/health`
+- `GET /api/projects`
+- `POST /api/codex/run`
+
+`POST /api/codex/run` streams newline-delimited JSON while `codex exec --json` runs, so the mobile chat sees Codex status and final responses without waiting for a full request to finish.
+
+## Project Snapshot
+
+You can still generate a snapshot without running the bridge:
+
+```bash
+npm run snapshot:projects -- "/Users/dumbfounder/Dropbox/codex apps" > mybrain-projects.json
+```
+
+The bridge uses the same scan concept: local path, git remote, current branch, dirty state, last commit info, and matching Render services when the Render CLI is available and logged in.
+
+## Development
 
 ```bash
 npm install --cache .npm-cache
 npm run dev
 ```
 
-## Project snapshot import
-
-Generate a JSON snapshot of your local Codex project folders:
-
-```bash
-npm run snapshot:projects -- "/Users/dumbfounder/Dropbox/codex apps" > mybrain-projects.json
-```
-
-Then import that file in the app. The generator pulls local path, git remote, current branch, dirty state, last commit info, and matching Render services when the Render CLI is available and logged in.
-
 ## Deploy
 
-Push to the `main` branch. The GitHub Actions workflow in `.github/workflows/deploy.yml` builds the app and publishes it to GitHub Pages.
+Render serves the static app from `dist`. GitHub Pages still builds with `VITE_BASE_PATH=/mybrain/`.
 
-## Render
-
-This repo also includes a `render.yaml` Blueprint for deploying the app as a Render static site. The Render build should use the default root base path, so no extra environment variables are required.
-
-## GitHub sync setup
-
-1. Create a GitHub personal access token with the `gist` scope.
-2. Open the deployed app.
-3. Paste the token into the GitHub sync panel.
-4. Click `Create sync gist`.
-5. On your phone, open the same app, paste the same token and gist id once, then sync.
-
-The token is stored only in that browser's local storage and used directly against the GitHub API.
-
-## ChatGPT integration
-
-MyBrain supports:
-
-- importing a ChatGPT export
-- saving ChatGPT links or copied text via the phone share sheet
-- manually capturing prompts and outcomes against a project
-
-It does not include automatic live ChatGPT history access.
+The static deployment is useful for the mobile shell, but real Codex control requires the local bridge or a tunnel to it.
