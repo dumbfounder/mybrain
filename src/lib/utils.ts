@@ -167,11 +167,32 @@ export const getLatestSession = (project: Project) => sortSessions(project.sessi
 
 export const getLatestDeploy = (project: Project) => sortDeploys(project.deploys)[0] ?? null
 
+const safeTime = (value?: string) => {
+  const time = value ? new Date(value).getTime() : 0
+
+  return Number.isFinite(time) ? time : 0
+}
+
+export const projectEngagementTime = (project: Project) =>
+  Math.max(
+    safeTime(project.lastTouchedAt),
+    safeTime(project.updatedAt),
+    ...project.sessions.map((session) => safeTime(session.updatedAt)),
+    ...project.features.map((feature) => safeTime(feature.updatedAt)),
+    ...project.deploys.map((deploy) => safeTime(deploy.updatedAt)),
+  )
+
 export const sortProjects = (projects: Project[]) =>
   [...projects].sort((left, right) => {
     const priorityRank = { now: 0, soon: 1, later: 2 }
     const statusRank = { active: 0, blocked: 1, paused: 2, done: 3 }
     const stageRank = { live: 0, building: 1, testing: 2, maintaining: 3, idea: 4 }
+    const engagementDelta = projectEngagementTime(right) - projectEngagementTime(left)
+
+    if (engagementDelta !== 0) {
+      return engagementDelta
+    }
+
     const priorityDelta = priorityRank[left.priority] - priorityRank[right.priority]
 
     if (priorityDelta !== 0) {
@@ -190,10 +211,7 @@ export const sortProjects = (projects: Project[]) =>
       return stageDelta
     }
 
-    return (
-      new Date(right.lastTouchedAt).getTime() -
-      new Date(left.lastTouchedAt).getTime()
-    )
+    return left.name.localeCompare(right.name)
   })
 
 export const formatDateTime = (value: string) =>

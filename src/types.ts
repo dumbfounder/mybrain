@@ -153,6 +153,7 @@ export type PromptWrapper = {
   includeProjectContext: boolean
   requireStatusSummary: boolean
   requireVerification: boolean
+  requireDeployment: boolean
   protectUserChanges: boolean
 }
 

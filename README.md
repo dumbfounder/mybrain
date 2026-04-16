@@ -61,4 +61,6 @@ npm run dev
 
 Render serves the static app from `dist`. GitHub Pages still builds with `VITE_BASE_PATH=/mybrain/`.
 
+CodexRemote-managed changes should push to GitHub and wait for the Render deploy to finish before the task is called complete. The mobile prompt wrapper also asks Codex to include the GitHub push result, Render deploy result, live URL, verification, and exact next action in its final relay completion.
+
 The static deployment is useful for the mobile shell, but real Codex control requires the local bridge, a private tunnel to it, or the CodexRemote relay.

@@ -17,7 +17,7 @@ export type BridgeHealth = {
 
 export type BridgeStreamEvent =
   | { type: 'bridge'; message: string }
-  | { type: 'thread'; threadId: string }
+  | { type: 'thread'; threadId: string; title?: string }
   | { type: 'assistant'; text: string }
   | { type: 'log'; stream: 'stdout' | 'stderr'; text: string }
   | { type: 'codex-event'; event: unknown }
@@ -62,11 +62,12 @@ type CodexTurnBody = {
 type RelaySnapshot = {
   done?: boolean
   phase?: string | null
+  threadTitle?: string | null
   statusText?: string | null
   relayStatus?: string | null
   relayCompletion?: string | null
   codexActivity?: string | null
-  result?: { message?: string } | null
+  result?: { message?: string; status?: string; thread?: string | null } | null
   resultText?: string | null
   error?: string | null
 }
@@ -132,12 +133,23 @@ const streamLocalCodexTurn = async (
   }
 }
 
+const cleanRelayText = (value: string) =>
+  value.replace(/^STATUS:\s*\w+\s*/i, '').trim()
+
 const snapshotText = (snapshot: RelaySnapshot) =>
-  snapshot.result?.message ||
-  snapshot.resultText ||
-  snapshot.relayCompletion ||
-  snapshot.error ||
-  ''
+  cleanRelayText(
+    snapshot.result?.message ||
+      snapshot.resultText ||
+      snapshot.relayCompletion ||
+      snapshot.error ||
+      '',
+  )
+
+const snapshotThreadTitle = (snapshot: RelaySnapshot) =>
+  snapshot.result?.thread || snapshot.threadTitle || ''
+
+const looksLikeCodexThreadId = (value: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 
 const streamRelayEvents = async (
   bridge: BridgeConfig,
@@ -159,6 +171,7 @@ const streamRelayEvents = async (
   const decoder = new TextDecoder()
   let buffer = ''
   let lastStatus = ''
+  let lastThreadTitle = ''
 
   const handleBlock = (block: string) => {
     let eventName = 'message'
@@ -191,6 +204,13 @@ const streamRelayEvents = async (
       onEvent({ type: 'log', stream: 'stdout', text: status })
     }
 
+    const threadTitle = snapshotThreadTitle(snapshot)
+
+    if (threadTitle && threadTitle !== lastThreadTitle) {
+      lastThreadTitle = threadTitle
+      onEvent({ type: 'thread', threadId: threadTitle, title: threadTitle })
+    }
+
     if (eventName === 'done' || snapshot.done) {
       const text = snapshotText(snapshot)
 
@@ -198,6 +218,11 @@ const streamRelayEvents = async (
         onEvent({ type: 'error', message: snapshot.error })
       } else if (text) {
         onEvent({ type: 'assistant', text })
+      } else {
+        onEvent({
+          type: 'assistant',
+          text: 'Remote run finished, but the relay did not return a final summary.',
+        })
       }
 
       onEvent({ type: 'turn-completed' })
@@ -228,6 +253,8 @@ const streamCodexRemoteRelayTurn = async (
   body: CodexTurnBody,
   onEvent: (event: BridgeStreamEvent) => void,
 ) => {
+  const relayThreadTitle =
+    body.sessionId && !looksLikeCodexThreadId(body.sessionId) ? body.sessionId : ''
   const queued = await bridgeJson<{ requestId: string; message: string }>(
     bridge.url,
     bridge.token,
@@ -236,8 +263,11 @@ const streamCodexRemoteRelayTurn = async (
       method: 'POST',
       body: JSON.stringify({
         text: body.prompt,
-        projectPath: body.cwd,
+        // Existing CodexRemote agents preserve the selected Codex thread only
+        // when the prompt uses their saved project/thread state.
+        projectPath: relayThreadTitle ? '' : body.cwd,
         projectName: body.projectName || body.projectId,
+        threadTitle: relayThreadTitle || undefined,
       }),
     },
   )

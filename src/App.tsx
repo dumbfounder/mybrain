@@ -21,8 +21,11 @@ import {
   hasText,
   hostFromUrl,
   nowIso,
+  DEPLOY_STATUS_OPTIONS,
+  PRIORITY_OPTIONS,
   PROJECT_STAGE_OPTIONS,
   PROJECT_STATUS_OPTIONS,
+  projectEngagementTime,
   sortProjects,
   sortSessions,
 } from './lib/utils'
@@ -30,6 +33,7 @@ import type {
   BridgeConfig,
   ConsoleMessage,
   LocalProjectSnapshot,
+  Priority,
   Project,
   ProjectStage,
   ProjectStatus,
@@ -264,26 +268,55 @@ const makeManualProject = (name: string, prompt: string): Project => {
   }
 }
 
-const statusLineFor = (project: Project) => {
-  const latestDeploy = getLatestDeploy(project)
-  const bits = [
-    project.status,
-    project.stage,
-    project.priority,
-    latestDeploy ? `${latestDeploy.status} ${hostFromUrl(latestDeploy.url) || latestDeploy.provider}` : '',
-  ].filter(Boolean)
+const optionLabel = <T extends string>(
+  options: Array<{ value: T; label: string }>,
+  value: T,
+) => options.find((option) => option.value === value)?.label ?? value
 
-  return bits.join(' · ')
+const engagementDateFor = (project: Project) =>
+  new Date(projectEngagementTime(project) || new Date(project.createdAt).getTime()).toISOString()
+
+const deployLineFor = (project: Project) => {
+  const latestDeploy = getLatestDeploy(project)
+
+  if (!latestDeploy) {
+    return ''
+  }
+
+  const deployLabel = optionLabel(DEPLOY_STATUS_OPTIONS, latestDeploy.status)
+  const target = hostFromUrl(latestDeploy.url) || latestDeploy.provider
+
+  return `Deploy: ${deployLabel}${target ? ` at ${target}` : ''}`
 }
 
+const statusLineFor = (project: Project) =>
+  [
+    `Last engaged ${formatRelative(engagementDateFor(project))}`,
+    deployLineFor(project),
+    `Status: ${optionLabel(PROJECT_STATUS_OPTIONS, project.status)}`,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
 const projectStateLineFor = (project: Project) =>
-  [project.status, project.stage, project.priority].filter(Boolean).join(' · ')
+  [
+    `Status: ${optionLabel(PROJECT_STATUS_OPTIONS, project.status)}`,
+    `Stage: ${optionLabel(PROJECT_STAGE_OPTIONS, project.stage)}`,
+    `Priority: ${optionLabel(PRIORITY_OPTIONS, project.priority)}`,
+  ].join(' · ')
+
+const projectOverviewLineFor = (project: Project) =>
+  [`Last engaged ${formatRelative(engagementDateFor(project))}`, deployLineFor(project)]
+    .filter(Boolean)
+    .join(' · ')
 
 function App() {
   const [storedState] = useState(loadState)
   const [initialConsole] = useState(loadConsoleSettings)
   const [projects, setProjects] = useState<Project[]>(sortProjects(storedState.projects))
-  const [selectedProjectId, setSelectedProjectId] = useState(storedState.projects[0]?.id ?? '')
+  const [selectedProjectId, setSelectedProjectId] = useState(
+    sortProjects(storedState.projects)[0]?.id ?? '',
+  )
   const [activeTab, setActiveTab] = useState<AppTab>('chat')
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
@@ -312,6 +345,7 @@ function App() {
       deferredSearch.trim() ? projectMatches(project, deferredSearch.trim()) : true,
     ),
   )
+  const projectMenuProjects = sortProjects(projects)
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? filteredProjects[0] ?? null
   const projectThreads = useMemo(
@@ -331,7 +365,7 @@ function App() {
     ? threadTitleDraftsByProject[selectedProject.id] ?? ''
     : ''
   const runLog = selectedProject ? runLogsByProject[selectedProject.id] ?? [] : []
-  const selectedStatus = selectedProject ? projectStateLineFor(selectedProject) : ''
+  const selectedStatus = selectedProject ? projectOverviewLineFor(selectedProject) : ''
   const projectStatusCounts = PROJECT_STATUS_OPTIONS.map((status) => ({
     ...status,
     count: projects.filter((project) => project.status === status.value).length,
@@ -545,7 +579,7 @@ function App() {
       return
     }
 
-    addThread(selectedProject, threadTitleDraft || 'New topic')
+    addThread(selectedProject, threadTitleDraft || 'New Codex chat')
     setActiveTab('chat')
   }
 
@@ -621,12 +655,15 @@ function App() {
     event: BridgeStreamEvent,
   ) => {
     if (event.type === 'thread') {
-      updateThread(project.id, threadId, { codexSessionId: event.threadId })
+      updateThread(project.id, threadId, {
+        codexSessionId: event.threadId,
+        ...(event.title ? { title: excerpt(event.title, 48) } : {}),
+      })
       setActiveThreadIdsByProject((current) => ({
         ...current,
         [project.id]: threadId,
       }))
-      addRunLog(project.id, `Thread ${event.threadId}`)
+      addRunLog(project.id, `Codex thread: ${event.title || event.threadId}`)
       return
     }
 
@@ -807,7 +844,7 @@ function App() {
 
           <div className="thread-bar">
             <label className="field thread-select">
-              <span>Topic thread</span>
+              <span>Codex thread</span>
               <select
                 value={activeThread?.id ?? NEW_THREAD_VALUE}
                 onChange={(event) => {
@@ -822,7 +859,7 @@ function App() {
                   }))
                 }}
               >
-                <option value={NEW_THREAD_VALUE}>New topic</option>
+                <option value={NEW_THREAD_VALUE}>New Codex chat</option>
                 {projectThreads.map((thread) => (
                   <option key={thread.id} value={thread.id}>
                     {thread.title}
@@ -831,7 +868,7 @@ function App() {
               </select>
             </label>
             <label className="field topic-title">
-              <span>New topic name</span>
+              <span>New thread label</span>
               <input
                 value={threadTitleDraft}
                 onChange={(event) =>
@@ -842,14 +879,14 @@ function App() {
             </label>
             <button type="button" className="secondary-button" onClick={handleNewThread}>
               <span aria-hidden="true">＋</span>
-              New
+              New Chat
             </button>
           </div>
 
           <div className="message-list">
             {activeMessages.length === 0 ? (
               <div className="empty-state">
-                <p>No messages in this topic.</p>
+                <p>No messages in this Codex thread.</p>
               </div>
             ) : (
               activeMessages.map((message) => (
@@ -893,7 +930,7 @@ function App() {
               rows={4}
             />
             <div className="composer-actions">
-              <span>{activeThread ? activeThread.title : 'New topic'}</span>
+              <span>{activeThread ? activeThread.title : 'New Codex chat'}</span>
               <button type="submit" className="primary-button" disabled={runBusy || !input.trim()}>
                 <span aria-hidden="true">↵</span>
                 {runBusy ? 'Running' : 'Send'}
@@ -1128,6 +1165,23 @@ function App() {
                 ))}
               </select>
             </label>
+            <label className="field">
+              <span>Priority</span>
+              <select
+                value={selectedProject.priority}
+                onChange={(event) =>
+                  updateSelectedProject({
+                    priority: event.target.value as Priority,
+                  })
+                }
+              >
+                {PRIORITY_OPTIONS.map((priority) => (
+                  <option key={priority.value} value={priority.value}>
+                    {priority.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <label className="field">
             <span>Current focus</span>
@@ -1206,6 +1260,19 @@ function App() {
           <label>
             <input
               type="checkbox"
+              checked={wrapper.requireDeployment}
+              onChange={(event) =>
+                setWrapper((current) => ({
+                  ...current,
+                  requireDeployment: event.target.checked,
+                }))
+              }
+            />
+            Require deploy confirmation
+          </label>
+          <label>
+            <input
+              type="checkbox"
               checked={wrapper.requireStatusSummary}
               onChange={(event) =>
                 setWrapper((current) => ({
@@ -1238,12 +1305,12 @@ function App() {
   const memoryTab = (
     <section className="memory-grid">
       <section className="tab-section">
-        <p className="eyebrow">Topic Threads</p>
+        <p className="eyebrow">Codex Threads</p>
         <h2>{projectThreads.length} threads</h2>
         <div className="thread-list">
           <button type="button" className="thread-card" onClick={handleNewThread}>
-            <strong>New topic</strong>
-            <span>Start clean</span>
+            <strong>New Codex chat</strong>
+            <span>Start clean in Codex</span>
           </button>
           {projectThreads.map((thread) => (
             <button
@@ -1352,9 +1419,9 @@ function App() {
               {projects.length === 0 ? (
                 <option value="">No projects yet</option>
               ) : null}
-              {projects.map((project) => (
+              {projectMenuProjects.map((project) => (
                 <option key={project.id} value={project.id}>
-                  {project.name}
+                  {project.name} - {formatRelative(engagementDateFor(project))}
                 </option>
               ))}
             </select>

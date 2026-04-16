@@ -4,10 +4,11 @@ export const defaultPromptWrapper = (): PromptWrapper => ({
   before:
     'You are operating through my private mobile Codex console. Be direct, preserve momentum, and act inside the selected project.',
   after:
-    'When you finish, summarize what changed, what you verified, and the exact next action.',
+    'When you finish, summarize what changed, what you verified, whether GitHub was pushed, whether Render finished deploying, the live URL if available, and the exact next action.',
   includeProjectContext: true,
   requireStatusSummary: true,
   requireVerification: true,
+  requireDeployment: true,
   protectUserChanges: true,
 })
 
@@ -42,6 +43,9 @@ export const buildCodexPrompt = (
       : '',
     wrapper.requireVerification
       ? 'Run or recommend the most relevant verification for code changes.'
+      : '',
+    wrapper.requireDeployment
+      ? 'For GitHub-backed Render projects, every successful code/content change should be committed, pushed, deployed, and verified on the live URL before you finish. If deployment cannot be completed, explain the blocker and exact next step.'
       : '',
     wrapper.requireStatusSummary
       ? 'Call out deploy/status impact and whether the project tracker should be updated.'
