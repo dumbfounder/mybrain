@@ -40,6 +40,25 @@ For a phone that cannot reach the Mac directly, MyBrain can also use a CodexRemo
 
 CodexRemote stays API-only in this setup. It does not render a separate web app; it only relays commands between MyBrain and the Mac-side CodexRemote agent.
 
+## Remote Work History
+
+The Remote tab reads orchestration state from a local RemoteControl API. The default URL is `http://127.0.0.1:3187`, and it can be overridden with `VITE_REMOTE_CONTROL_URL` or from the Remote tab in the app.
+
+Current endpoints used by the UI:
+
+- `GET /api/health`
+- `GET /api/projects`
+- `GET /api/history`
+- `GET /api/history/:requestId`
+
+If `/api/history` is not implemented yet, the UI keeps showing health and projects and displays a history-not-enabled empty state. Because MyBrain is a static browser app, private GitHub history, artifact reads, and token-backed metadata should be exposed through RemoteControl or another backend proxy instead of putting GitHub tokens in client-side code.
+
+Local verification:
+
+```bash
+npm run check:remote-control
+```
+
 ## Project Snapshot
 
 You can still generate a snapshot without running the bridge:

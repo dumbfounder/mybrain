@@ -287,7 +287,7 @@ summary:focus-visible {
   top: 86px;
   z-index: 19;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 6px;
   margin-bottom: 12px;
   padding: 6px;
@@ -540,7 +540,10 @@ summary:focus-visible {
 .project-grid,
 .settings-grid,
 .memory-grid,
-.queue-list {
+.queue-list,
+.remote-grid,
+.remote-project-list,
+.remote-workstream-list {
   display: grid;
   gap: 12px;
 }
@@ -652,6 +655,181 @@ summary:focus-visible {
   border-color: rgba(180, 35, 24, 0.25);
   background: rgba(180, 35, 24, 0.1);
   color: var(--danger);
+}
+
+.remote-actions,
+.remote-link-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.remote-link-row a,
+.remote-link-row span {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-project-card,
+.remote-detail-panel,
+.remote-workstream,
+.remote-text-block {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.remote-project-card h3,
+.remote-workstream h3,
+.remote-detail-heading h3,
+.remote-project-card p,
+.remote-text-block p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.remote-project-card small,
+.remote-request-row small,
+.remote-detail-heading small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.remote-history-layout {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.remote-request-row {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+}
+
+.remote-request-row.selected {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.remote-request-row strong,
+.remote-request-row span {
+  overflow-wrap: anywhere;
+}
+
+.remote-status {
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.remote-status--queued,
+.remote-status--running {
+  border-color: rgba(36, 91, 214, 0.25);
+  background: rgba(36, 91, 214, 0.1);
+  color: var(--blue);
+}
+
+.remote-status--ok {
+  border-color: rgba(17, 97, 73, 0.28);
+  background: rgba(17, 97, 73, 0.1);
+  color: var(--accent);
+}
+
+.remote-status--blocked {
+  border-color: rgba(161, 79, 24, 0.28);
+  background: rgba(161, 79, 24, 0.1);
+  color: var(--warning);
+}
+
+.remote-status--failed {
+  border-color: rgba(180, 35, 24, 0.25);
+  background: rgba(180, 35, 24, 0.1);
+  color: var(--danger);
+}
+
+.remote-detail-heading {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.remote-detail-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.remote-detail-grid span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.remote-detail-grid strong,
+.remote-text-block span {
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.remote-text-block pre {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 10px;
+  background: #101820;
+  color: #e7f4ef;
+  white-space: pre-wrap;
+}
+
+.remote-text-block ul {
+  margin: 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
+.error-text {
+  margin: 0;
+  color: var(--danger);
+  font-weight: 750;
+  overflow-wrap: anywhere;
 }
 
 .field-grid {
@@ -775,6 +953,15 @@ summary:focus-visible {
   .settings-grid,
   .memory-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .remote-history-layout {
+    grid-template-columns: minmax(260px, 0.85fr) minmax(0, 1.35fr);
+    align-items: start;
+  }
+
+  .remote-detail-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .settings-grid .wrapper-panel,

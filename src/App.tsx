@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { startTransition, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
 import {
@@ -11,6 +11,20 @@ import {
 import { mergeProjectCollections } from './lib/gistSync'
 import { importProjectSnapshotValue } from './lib/projectSnapshotImport'
 import { buildCodexPrompt, defaultPromptWrapper } from './lib/promptWrapper'
+import {
+  DEFAULT_REMOTE_CONTROL_URL,
+  RemoteControlHttpError,
+  getHealth,
+  getHistory,
+  getHistoryDetail,
+  getProjects,
+  normalizeRemoteControlUrl,
+  type RemoteControlHealth,
+  type RemoteControlProject,
+  type RemoteHistoryDetail,
+  type RemoteHistoryItem,
+  type RemoteHistoryStatus,
+} from './lib/remoteControlClient'
 import { loadState, saveState } from './lib/storage'
 import {
   excerpt,
@@ -20,6 +34,7 @@ import {
   getLatestDeploy,
   hasText,
   hostFromUrl,
+  normalizeRepoUrl,
   nowIso,
   DEPLOY_STATUS_OPTIONS,
   PRIORITY_OPTIONS,
@@ -40,7 +55,7 @@ import type {
   PromptWrapper,
 } from './types'
 
-type AppTab = 'chat' | 'queue' | 'projects' | 'settings' | 'memory'
+type AppTab = 'chat' | 'queue' | 'remote' | 'projects' | 'settings' | 'memory'
 
 type ConsoleThread = {
   id: string
@@ -66,6 +81,7 @@ type QueuedPrompt = {
 type ConsoleSettings = {
   bridge: BridgeConfig
   wrapper: PromptWrapper
+  remoteControlUrl: string
   selectedProjectId: string
   threadsByProject: Record<string, ConsoleThread[]>
   activeThreadIdsByProject: Record<string, string>
@@ -85,6 +101,7 @@ const CODEXREMOTE_RELAY_URL = 'https://codexremote.onrender.com'
 const tabs: { id: AppTab; label: string }[] = [
   { id: 'chat', label: 'Current' },
   { id: 'queue', label: 'Queue' },
+  { id: 'remote', label: 'Remote' },
   { id: 'projects', label: 'Projects' },
   { id: 'settings', label: 'Settings' },
   { id: 'memory', label: 'Memory' },
@@ -153,6 +170,7 @@ const defaultConsoleSettings = (): ConsoleSettings => ({
     model: '',
   },
   wrapper: defaultPromptWrapper(),
+  remoteControlUrl: DEFAULT_REMOTE_CONTROL_URL,
   selectedProjectId: '',
   threadsByProject: {},
   activeThreadIdsByProject: {},
@@ -190,6 +208,10 @@ const loadConsoleSettings = () => {
     return {
       bridge,
       wrapper: { ...fallback.wrapper, ...parsed.wrapper },
+      remoteControlUrl:
+        typeof parsed.remoteControlUrl === 'string' && parsed.remoteControlUrl.trim()
+          ? parsed.remoteControlUrl
+          : fallback.remoteControlUrl,
       selectedProjectId:
         typeof parsed.selectedProjectId === 'string'
           ? parsed.selectedProjectId
@@ -315,6 +337,51 @@ const statusLineFor = (project: Project) =>
     .filter(Boolean)
     .join(' · ')
 
+const remoteStatusTreatment: Record<
+  RemoteHistoryStatus,
+  { label: string; detail: string }
+> = {
+  queued: { label: 'In progress', detail: 'Queued' },
+  running: { label: 'In progress', detail: 'Running' },
+  ok: { label: 'Successful', detail: 'Done' },
+  blocked: { label: 'Needs human action', detail: 'Blocked' },
+  failed: { label: 'Failed with diagnostic', detail: 'Failed' },
+}
+
+const formatOptionalDate = (value?: string | null) => {
+  if (!value) {
+    return 'Not recorded'
+  }
+
+  try {
+    return formatDateTime(value)
+  } catch {
+    return value
+  }
+}
+
+const timeForSort = (value?: string | null) => {
+  const time = value ? new Date(value).getTime() : 0
+
+  return Number.isFinite(time) ? time : 0
+}
+
+const remoteErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : 'RemoteControl request failed.'
+
+const isAbortError = (error: unknown) =>
+  error instanceof DOMException && error.name === 'AbortError'
+
+const commitUrlFor = (repoUrl?: string | null, commitSha?: string | null) => {
+  if (!repoUrl || !commitSha) {
+    return ''
+  }
+
+  const normalized = normalizeRepoUrl(repoUrl)
+
+  return normalized.includes('github.com') ? `${normalized}/commit/${commitSha}` : ''
+}
+
 function App() {
   const [storedState] = useState(loadState)
   const [initialConsole] = useState(loadConsoleSettings)
@@ -332,6 +399,25 @@ function App() {
   const deferredSearch = useDeferredValue(search)
   const [bridge, setBridge] = useState(initialConsole.bridge)
   const [wrapper, setWrapper] = useState(initialConsole.wrapper)
+  const [remoteControlUrl, setRemoteControlUrl] = useState(initialConsole.remoteControlUrl)
+  const [remoteControlDraftUrl, setRemoteControlDraftUrl] = useState(
+    initialConsole.remoteControlUrl,
+  )
+  const [remoteHealth, setRemoteHealth] = useState<RemoteControlHealth | null>(null)
+  const [remoteProjects, setRemoteProjects] = useState<RemoteControlProject[]>([])
+  const [remoteHistory, setRemoteHistory] = useState<RemoteHistoryItem[]>([])
+  const [remoteHistoryDetail, setRemoteHistoryDetail] = useState<RemoteHistoryDetail | null>(null)
+  const [selectedRemoteRequestId, setSelectedRemoteRequestId] = useState('')
+  const [remoteLoading, setRemoteLoading] = useState(false)
+  const [remoteDetailLoading, setRemoteDetailLoading] = useState(false)
+  const [remoteHistoryUnavailable, setRemoteHistoryUnavailable] = useState(false)
+  const [remoteLastCheckedAt, setRemoteLastCheckedAt] = useState('')
+  const [remoteErrors, setRemoteErrors] = useState({
+    health: '',
+    projects: '',
+    history: '',
+    detail: '',
+  })
   const [threadsByProject, setThreadsByProject] = useState(initialConsole.threadsByProject)
   const [activeThreadIdsByProject, setActiveThreadIdsByProject] = useState(
     initialConsole.activeThreadIdsByProject,
@@ -380,6 +466,25 @@ function App() {
   const latestSessions = selectedProject ? sortSessions(selectedProject.sessions).slice(0, 5) : []
   const input = selectedProject ? inputDraftsByProject[selectedProject.id] ?? '' : ''
   const runLog = selectedProject ? runLogsByProject[selectedProject.id] ?? [] : []
+  const selectedRemoteHistoryItem =
+    remoteHistory.find((item) => item.requestId === selectedRemoteRequestId) ?? null
+  const selectedRemoteHistory = remoteHistoryDetail ?? selectedRemoteHistoryItem
+  const selectedRemoteCommitUrl = selectedRemoteHistory
+    ? commitUrlFor(selectedRemoteHistory.repoUrl, selectedRemoteHistory.commitSha)
+    : ''
+  const remoteHistoryGroups = useMemo(() => {
+    const groups = new Map<string, RemoteHistoryItem[]>()
+    const sortedHistory = [...remoteHistory].sort(
+      (left, right) => timeForSort(right.createdAt) - timeForSort(left.createdAt),
+    )
+
+    for (const item of sortedHistory) {
+      const key = item.workstreamAlias || item.projectName || 'Remote work'
+      groups.set(key, [...(groups.get(key) ?? []), item])
+    }
+
+    return Array.from(groups.entries()).map(([name, items]) => ({ name, items }))
+  }, [remoteHistory])
   const recentMessages = [...activeMessages].reverse()
   const recentRunLog = [...runLog].reverse()
   const projectStatusCounts = PROJECT_STATUS_OPTIONS.map((status) => ({
@@ -401,6 +506,128 @@ function App() {
         ? buildCodexPrompt('Describe the current state and next action.', selectedProject, wrapper)
         : ''
 
+  const loadRemoteWork = useCallback(
+    async (signal?: AbortSignal, urlOverride?: string) => {
+      const baseUrl = normalizeRemoteControlUrl(urlOverride ?? remoteControlUrl)
+
+      setRemoteLoading(true)
+      setRemoteHistoryUnavailable(false)
+      setRemoteErrors({ health: '', projects: '', history: '', detail: '' })
+
+      try {
+        const health = await getHealth(baseUrl, signal)
+
+        if (signal?.aborted) {
+          return
+        }
+
+        setRemoteHealth(health)
+      } catch (error) {
+        if (isAbortError(error) || signal?.aborted) {
+          return
+        }
+
+        setRemoteHealth(null)
+        setRemoteProjects([])
+        setRemoteHistory([])
+        setRemoteErrors((current) => ({
+          ...current,
+          health: remoteErrorMessage(error),
+        }))
+        setRemoteLoading(false)
+        setRemoteLastCheckedAt(nowIso())
+        return
+      }
+
+      try {
+        const nextProjects = await getProjects(baseUrl, signal)
+
+        if (!signal?.aborted) {
+          setRemoteProjects(nextProjects)
+        }
+      } catch (error) {
+        if (!isAbortError(error) && !signal?.aborted) {
+          setRemoteProjects([])
+          setRemoteErrors((current) => ({
+            ...current,
+            projects: remoteErrorMessage(error),
+          }))
+        }
+      }
+
+      try {
+        const nextHistory = await getHistory(baseUrl, signal)
+
+        if (!signal?.aborted) {
+          setRemoteHistory(nextHistory)
+        }
+      } catch (error) {
+        if (!isAbortError(error) && !signal?.aborted) {
+          setRemoteHistory([])
+
+          if (error instanceof RemoteControlHttpError && error.status === 404) {
+            setRemoteHistoryUnavailable(true)
+          } else {
+            setRemoteErrors((current) => ({
+              ...current,
+              history: remoteErrorMessage(error),
+            }))
+          }
+        }
+      } finally {
+        if (!signal?.aborted) {
+          setRemoteLoading(false)
+          setRemoteLastCheckedAt(nowIso())
+        }
+      }
+    },
+    [remoteControlUrl],
+  )
+
+  const loadRemoteHistoryDetail = useCallback(
+    async (requestId: string, signal?: AbortSignal) => {
+      if (!requestId) {
+        setRemoteHistoryDetail(null)
+        return
+      }
+
+      setRemoteDetailLoading(true)
+      setRemoteErrors((current) => ({ ...current, detail: '' }))
+
+      try {
+        const detail = await getHistoryDetail(requestId, remoteControlUrl, signal)
+
+        if (!signal?.aborted) {
+          setRemoteHistoryDetail(detail)
+        }
+      } catch (error) {
+        if (!isAbortError(error) && !signal?.aborted) {
+          setRemoteHistoryDetail(null)
+          setRemoteErrors((current) => ({
+            ...current,
+            detail:
+              error instanceof RemoteControlHttpError && error.status === 404
+                ? 'Detailed history is not available for this request yet.'
+                : remoteErrorMessage(error),
+          }))
+        }
+      } finally {
+        if (!signal?.aborted) {
+          setRemoteDetailLoading(false)
+        }
+      }
+    },
+    [remoteControlUrl],
+  )
+
+  const handleRemoteRefresh = () => {
+    const nextUrl = normalizeRemoteControlUrl(remoteControlDraftUrl || DEFAULT_REMOTE_CONTROL_URL)
+
+    setRemoteControlUrl(nextUrl)
+    setRemoteControlDraftUrl(nextUrl)
+    void loadRemoteWork(undefined, nextUrl)
+  }
+
   useEffect(() => {
     saveState({ projects, sync: storedState.sync })
   }, [projects, storedState.sync])
@@ -409,6 +636,7 @@ function App() {
     saveConsoleSettings({
       bridge,
       wrapper,
+      remoteControlUrl,
       selectedProjectId,
       threadsByProject,
       activeThreadIdsByProject,
@@ -422,10 +650,50 @@ function App() {
     inputDraftsByProject,
     messagesByThread,
     queuedPromptsByProject,
+    remoteControlUrl,
     selectedProjectId,
     threadsByProject,
     wrapper,
   ])
+
+  useEffect(() => {
+    if (activeTab !== 'remote') {
+      return
+    }
+
+    const controller = new AbortController()
+
+    void loadRemoteWork(controller.signal)
+
+    return () => controller.abort()
+  }, [activeTab, loadRemoteWork])
+
+  useEffect(() => {
+    if (!remoteHistory.length) {
+      setSelectedRemoteRequestId('')
+      return
+    }
+
+    if (
+      !selectedRemoteRequestId ||
+      !remoteHistory.some((item) => item.requestId === selectedRemoteRequestId)
+    ) {
+      setSelectedRemoteRequestId(remoteHistory[0].requestId)
+    }
+  }, [remoteHistory, selectedRemoteRequestId])
+
+  useEffect(() => {
+    if (activeTab !== 'remote' || !selectedRemoteRequestId) {
+      setRemoteHistoryDetail(null)
+      return
+    }
+
+    const controller = new AbortController()
+
+    void loadRemoteHistoryDetail(selectedRemoteRequestId, controller.signal)
+
+    return () => controller.abort()
+  }, [activeTab, loadRemoteHistoryDetail, selectedRemoteRequestId])
 
   useEffect(() => {
     if (!selectedProject && filteredProjects[0]) {
@@ -1187,7 +1455,267 @@ function App() {
 	    </section>
 	  )
 
-		  const projectsTab = (
+  const remoteTab = (
+    <section className="remote-grid">
+      <section className="tab-section">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Remote Work</p>
+            <h2>Codex History</h2>
+          </div>
+          <span className={remoteHealth?.ok ? 'status-pill online' : 'status-pill'}>
+            {remoteLoading ? 'Checking' : remoteHealth?.ok ? 'Connected' : 'Offline'}
+          </span>
+        </div>
+        <label className="field">
+          <span>RemoteControl URL</span>
+          <input
+            value={remoteControlDraftUrl}
+            onChange={(event) => setRemoteControlDraftUrl(event.target.value)}
+            placeholder={DEFAULT_REMOTE_CONTROL_URL}
+          />
+        </label>
+        <div className="remote-actions">
+          <button type="button" className="primary-button" onClick={handleRemoteRefresh}>
+            <span aria-hidden="true">↻</span>
+            Refresh
+          </button>
+          {remoteLastCheckedAt ? (
+            <span className="muted">Checked {formatRelative(remoteLastCheckedAt)}</span>
+          ) : null}
+        </div>
+        {remoteErrors.health ? <p className="error-text">{remoteErrors.health}</p> : null}
+        {remoteHealth ? (
+          <div className="status-overview" aria-label="Remote queue status">
+            {(['queued', 'running', 'ok', 'blocked', 'failed'] as const).map((status) => (
+              <span key={status}>
+                <strong>{remoteHealth.queue?.[status] ?? 0}</strong>
+                {status}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <p className="muted">
+          Private GitHub history should flow through RemoteControl or another backend proxy; this
+          static UI does not read GitHub tokens in the browser.
+        </p>
+      </section>
+
+      <section className="tab-section">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Remote Projects</p>
+            <h2>{remoteProjects.length} registered</h2>
+          </div>
+        </div>
+        {remoteErrors.projects ? <p className="error-text">{remoteErrors.projects}</p> : null}
+        {remoteProjects.length ? (
+          <div className="remote-project-list">
+            {remoteProjects.map((project) => (
+              <article key={`${project.name}-${project.path}`} className="remote-project-card">
+                <h3>{project.name}</h3>
+                <p>{project.path}</p>
+                <div className="remote-link-row">
+                  {project.repoUrl ? (
+                    <a href={normalizeRepoUrl(project.repoUrl)} target="_blank" rel="noreferrer">
+                      Repo
+                    </a>
+                  ) : null}
+                  {project.deployUrl ? (
+                    <a href={project.deployUrl} target="_blank" rel="noreferrer">
+                      Deploy
+                    </a>
+                  ) : null}
+                  {project.defaultSandboxMode ? <span>{project.defaultSandboxMode}</span> : null}
+                </div>
+                {project.notes ? <small>{project.notes}</small> : null}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <section className="empty-state">
+            <p>{remoteLoading ? 'Loading remote projects...' : 'No remote projects returned.'}</p>
+          </section>
+        )}
+      </section>
+
+      <section className="tab-section remote-history-section">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Workstreams</p>
+            <h2>{remoteHistory.length} requests</h2>
+          </div>
+        </div>
+        {remoteErrors.history ? <p className="error-text">{remoteErrors.history}</p> : null}
+        {remoteHistoryUnavailable ? (
+          <section className="empty-state">
+            <p>History sync is not enabled yet. Health and project data are still available.</p>
+          </section>
+        ) : remoteHistory.length ? (
+          <div className="remote-history-layout">
+            <div className="remote-workstream-list">
+              {remoteHistoryGroups.map((group) => (
+                <section key={group.name} className="remote-workstream">
+                  <h3>{group.name}</h3>
+                  {group.items.map((item) => {
+                    const treatment = remoteStatusTreatment[item.status]
+                    const prompt = item.promptPreview || item.promptText || 'No prompt preview.'
+
+                    return (
+                      <button
+                        key={item.requestId}
+                        type="button"
+                        className={
+                          item.requestId === selectedRemoteRequestId
+                            ? 'remote-request-row selected'
+                            : 'remote-request-row'
+                        }
+                        onClick={() => setSelectedRemoteRequestId(item.requestId)}
+                      >
+                        <span className={`remote-status remote-status--${item.status}`}>
+                          {treatment.detail}
+                        </span>
+                        <strong>{excerpt(prompt, 92)}</strong>
+                        <span>{treatment.label}</span>
+                        <small>
+                          {formatOptionalDate(item.createdAt)}
+                          {item.finishedAt ? ` -> ${formatOptionalDate(item.finishedAt)}` : ''}
+                        </small>
+                        {item.codexSessionId ? <small>{excerpt(item.codexSessionId, 44)}</small> : null}
+                      </button>
+                    )
+                  })}
+                </section>
+              ))}
+            </div>
+
+            <article className="remote-detail-panel">
+              {selectedRemoteHistory ? (
+                <>
+                  <div className="remote-detail-heading">
+                    <span className={`remote-status remote-status--${selectedRemoteHistory.status}`}>
+                      {remoteStatusTreatment[selectedRemoteHistory.status].detail}
+                    </span>
+                    <h3>{selectedRemoteHistory.projectName}</h3>
+                    <small>{selectedRemoteHistory.requestId}</small>
+                  </div>
+                  {remoteDetailLoading ? <p className="muted">Loading request detail...</p> : null}
+                  {remoteErrors.detail ? <p className="error-text">{remoteErrors.detail}</p> : null}
+                  <div className="remote-link-row">
+                    {selectedRemoteHistory.repoUrl ? (
+                      <a
+                        href={normalizeRepoUrl(selectedRemoteHistory.repoUrl)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Repo
+                      </a>
+                    ) : null}
+                    {selectedRemoteHistory.deployUrl ? (
+                      <a href={selectedRemoteHistory.deployUrl} target="_blank" rel="noreferrer">
+                        Deploy
+                      </a>
+                    ) : null}
+                    {selectedRemoteCommitUrl ? (
+                      <a href={selectedRemoteCommitUrl} target="_blank" rel="noreferrer">
+                        Commit
+                      </a>
+                    ) : null}
+                    {selectedRemoteHistory.artifactUrl ? (
+                      <a href={selectedRemoteHistory.artifactUrl} target="_blank" rel="noreferrer">
+                        Artifact
+                      </a>
+                    ) : null}
+                    {remoteHistoryDetail?.codexEventsUrl ? (
+                      <a
+                        href={remoteHistoryDetail.codexEventsUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Events
+                      </a>
+                    ) : null}
+                  </div>
+                  <div className="remote-detail-grid">
+                    <span>
+                      <strong>Created</strong>
+                      {formatOptionalDate(selectedRemoteHistory.createdAt)}
+                    </span>
+                    <span>
+                      <strong>Finished</strong>
+                      {formatOptionalDate(selectedRemoteHistory.finishedAt)}
+                    </span>
+                    <span>
+                      <strong>Thread</strong>
+                      {selectedRemoteHistory.codexSessionId
+                        ? excerpt(selectedRemoteHistory.codexSessionId, 48)
+                        : 'Not recorded'}
+                    </span>
+                  </div>
+                  {selectedRemoteHistory.latestStatusLine ? (
+                    <p className="muted">{selectedRemoteHistory.latestStatusLine}</p>
+                  ) : null}
+                  {selectedRemoteHistory.summary || remoteHistoryDetail?.assistantOutput ? (
+                    <section className="remote-text-block">
+                      <span>Summary</span>
+                      <p>{selectedRemoteHistory.summary || remoteHistoryDetail?.assistantOutput}</p>
+                    </section>
+                  ) : null}
+                  {selectedRemoteHistory.finalCompletionText || remoteHistoryDetail?.relayCompletion ? (
+                    <section className="remote-text-block">
+                      <span>Final completion</span>
+                      <pre>
+                        {selectedRemoteHistory.finalCompletionText ||
+                          remoteHistoryDetail?.relayCompletion}
+                      </pre>
+                    </section>
+                  ) : null}
+                  {remoteHistoryDetail?.inputPrompt || selectedRemoteHistory.promptText ? (
+                    <section className="remote-text-block">
+                      <span>Original prompt</span>
+                      <pre>{remoteHistoryDetail?.inputPrompt || selectedRemoteHistory.promptText}</pre>
+                    </section>
+                  ) : null}
+                  {remoteHistoryDetail?.workerPrompt ? (
+                    <section className="remote-text-block">
+                      <span>Worker prompt</span>
+                      <pre>{remoteHistoryDetail.workerPrompt}</pre>
+                    </section>
+                  ) : null}
+                  {remoteHistoryDetail?.changedFiles?.length ? (
+                    <section className="remote-text-block">
+                      <span>Changed files</span>
+                      <ul>
+                        {remoteHistoryDetail.changedFiles.map((file) => (
+                          <li key={file}>{file}</li>
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null}
+                  {remoteHistoryDetail?.metadata ? (
+                    <section className="remote-text-block">
+                      <span>Metadata</span>
+                      <pre>{JSON.stringify(remoteHistoryDetail.metadata, null, 2)}</pre>
+                    </section>
+                  ) : null}
+                </>
+              ) : (
+                <section className="empty-state">
+                  <p>Select a remote request to see details.</p>
+                </section>
+              )}
+            </article>
+          </div>
+        ) : (
+          <section className="empty-state">
+            <p>{remoteLoading ? 'Loading history...' : 'No remote Codex history returned yet.'}</p>
+          </section>
+        )}
+      </section>
+    </section>
+  )
+
+  const projectsTab = (
 	    <section className="tab-section">
       <div className="section-heading">
         <div>
@@ -1668,6 +2196,7 @@ function App() {
       <main className="tab-panel">
         {activeTab === 'chat' ? chatTab : null}
         {activeTab === 'queue' ? queueTab : null}
+        {activeTab === 'remote' ? remoteTab : null}
         {activeTab === 'projects' ? projectsTab : null}
         {activeTab === 'settings' ? settingsTab : null}
         {activeTab === 'memory' ? memoryTab : null}
