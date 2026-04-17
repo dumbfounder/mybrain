@@ -137,7 +137,7 @@ npm run dev
 
 ## Deploy
 
-Render runs the Node server with `npm run start`. The server exposes `/api/remote-control/*` first, then serves the built Vite app from `dist` and falls back to `dist/index.html` for SPA routes. GitHub Pages still builds with `VITE_BASE_PATH=/mybrain/` but does not provide backend ingestion APIs.
+Render runs the Node server as `mybrain-ai-tracker-web` with `npm run start`. The server exposes `/api/remote-control/*` first, then serves the built Vite app from `dist` and falls back to `dist/index.html` for SPA routes. The older `mybrain-ai-tracker` static service can still serve the SPA, but it cannot receive RemoteControl POSTs. GitHub Pages still builds with `VITE_BASE_PATH=/mybrain/` but does not provide backend ingestion APIs.
 
 Render requires these environment variables for production RemoteControl ingest:
 

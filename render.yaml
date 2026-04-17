@@ -1,7 +1,7 @@
 services:
   - type: web
     runtime: node
-    name: mybrain-ai-tracker
+    name: mybrain-ai-tracker-web
     repo: https://github.com/dumbfounder/mybrain
     branch: main
     buildCommand: npm ci && npm run build
