@@ -18,4 +18,4 @@ Default operating rules for `mybrain`:
 
 ## Project-specific Git rule
 
-- Any Codex-made repository change must be committed and pushed before the task is considered complete. If commit or push is blocked, report the blocker and the exact next step.
+- Any Codex-made repository change must be committed and pushed before the task is considered complete, unless the user explicitly says not to push. If commit or push is blocked, report the blocker and the exact next step.
