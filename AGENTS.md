@@ -15,3 +15,7 @@ Default operating rules for `mybrain`:
 - Reuse sibling-project patterns before inventing new deploy or env conventions.
 - Verify the deploy path, or explain the exact blocker and next step, before ending deployment-related work.
 <!-- CODEXREMOTE_DEPLOY_TEMPLATE:END -->
+
+## Project-specific Git rule
+
+- Any Codex-made repository change must be committed and pushed before the task is considered complete. If commit or push is blocked, report the blocker and the exact next step.
