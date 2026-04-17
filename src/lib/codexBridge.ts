@@ -258,9 +258,9 @@ const streamCodexRemoteRelayTurn = async (
       method: 'POST',
       body: JSON.stringify({
         text: body.prompt,
-        // Let CodexRemote use its saved selected project/thread so MyBrain
-        // mirrors the Codex UI instead of opening a new chat by path.
-        projectPath: '',
+        // Target the selected MyBrain project explicitly. Falling back to the
+        // saved CodexRemote selection can route mobile prompts to the wrong app.
+        projectPath: body.cwd,
         projectName: body.projectName || body.projectId,
       }),
     },
