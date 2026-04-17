@@ -43,6 +43,7 @@ export type RemoteHistoryItem = {
   deployUrl?: string | null
   commitSha?: string | null
   artifactUrl?: string | null
+  codexUiHandoff?: string | null
 }
 
 export type RemoteHistoryDetail = RemoteHistoryItem & {
@@ -52,11 +53,40 @@ export type RemoteHistoryDetail = RemoteHistoryItem & {
   relayCompletion?: string
   changedFiles?: string[]
   codexEventsUrl?: string
+  codexEventsJsonl?: string
   metadata?: Record<string, unknown>
 }
 
-export const DEFAULT_REMOTE_CONTROL_URL =
+export type RemoteHistoryMode = 'local' | 'server'
+
+const hostedHistoryMode = () => {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  const hostname = window.location.hostname
+
+  return hostname.includes('onrender.com') || hostname.includes('github.io')
+}
+
+export const DEFAULT_REMOTE_HISTORY_MODE: RemoteHistoryMode =
+  import.meta.env.VITE_REMOTE_HISTORY_MODE === 'server' || hostedHistoryMode()
+    ? 'server'
+    : 'local'
+
+const defaultBrowserOrigin = () =>
+  typeof window !== 'undefined' ? window.location.origin : ''
+
+export const DEFAULT_LOCAL_REMOTE_CONTROL_URL =
   import.meta.env.VITE_REMOTE_CONTROL_URL?.trim() || 'http://127.0.0.1:3187'
+
+export const DEFAULT_MYBRAIN_API_BASE =
+  import.meta.env.VITE_MYBRAIN_API_BASE?.trim() || defaultBrowserOrigin() || '/'
+
+export const DEFAULT_REMOTE_CONTROL_URL =
+  DEFAULT_REMOTE_HISTORY_MODE === 'server'
+    ? DEFAULT_MYBRAIN_API_BASE
+    : DEFAULT_LOCAL_REMOTE_CONTROL_URL
 
 export class RemoteControlHttpError extends Error {
   status: number
@@ -71,12 +101,18 @@ export class RemoteControlHttpError extends Error {
 export const normalizeRemoteControlUrl = (value: string) =>
   value.trim().replace(/\/+$/, '') || DEFAULT_REMOTE_CONTROL_URL
 
+const apiPathFor = (mode: RemoteHistoryMode, path: string) =>
+  mode === 'server'
+    ? `/api/remote-control${path.replace(/^\/api/, '')}`
+    : path
+
 const fetchJson = async <T>(
   baseUrl: string,
   path: string,
+  mode: RemoteHistoryMode,
   signal?: AbortSignal,
 ) => {
-  const response = await fetch(`${normalizeRemoteControlUrl(baseUrl)}${path}`, {
+  const response = await fetch(`${normalizeRemoteControlUrl(baseUrl)}${apiPathFor(mode, path)}`, {
     signal,
   })
 
@@ -129,14 +165,18 @@ const objectFromResponse = <T>(value: unknown, keys: string[]) => {
   return null
 }
 
-export const getHealth = (baseUrl = DEFAULT_REMOTE_CONTROL_URL, signal?: AbortSignal) =>
-  fetchJson<RemoteControlHealth>(baseUrl, '/api/health', signal)
+export const getHealth = (
+  baseUrl = DEFAULT_REMOTE_CONTROL_URL,
+  signal?: AbortSignal,
+  mode = DEFAULT_REMOTE_HISTORY_MODE,
+) => fetchJson<RemoteControlHealth>(baseUrl, '/api/health', mode, signal)
 
 export const getProjects = async (
   baseUrl = DEFAULT_REMOTE_CONTROL_URL,
   signal?: AbortSignal,
+  mode = DEFAULT_REMOTE_HISTORY_MODE,
 ) => {
-  const value = await fetchJson<unknown>(baseUrl, '/api/projects', signal)
+  const value = await fetchJson<unknown>(baseUrl, '/api/projects', mode, signal)
 
   return arrayFromResponse<RemoteControlProject>(value, ['projects', 'items'])
 }
@@ -144,8 +184,9 @@ export const getProjects = async (
 export const getHistory = async (
   baseUrl = DEFAULT_REMOTE_CONTROL_URL,
   signal?: AbortSignal,
+  mode = DEFAULT_REMOTE_HISTORY_MODE,
 ) => {
-  const value = await fetchJson<unknown>(baseUrl, '/api/history', signal)
+  const value = await fetchJson<unknown>(baseUrl, '/api/history', mode, signal)
 
   return arrayFromResponse<RemoteHistoryItem>(value, ['history', 'items', 'requests'])
 }
@@ -154,10 +195,12 @@ export const getHistoryDetail = async (
   requestId: string,
   baseUrl = DEFAULT_REMOTE_CONTROL_URL,
   signal?: AbortSignal,
+  mode = DEFAULT_REMOTE_HISTORY_MODE,
 ) => {
   const value = await fetchJson<unknown>(
     baseUrl,
     `/api/history/${encodeURIComponent(requestId)}`,
+    mode,
     signal,
   )
 

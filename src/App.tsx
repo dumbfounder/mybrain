@@ -13,6 +13,9 @@ import { importProjectSnapshotValue } from './lib/projectSnapshotImport'
 import { buildCodexPrompt, defaultPromptWrapper } from './lib/promptWrapper'
 import {
   DEFAULT_REMOTE_CONTROL_URL,
+  DEFAULT_LOCAL_REMOTE_CONTROL_URL,
+  DEFAULT_MYBRAIN_API_BASE,
+  DEFAULT_REMOTE_HISTORY_MODE,
   RemoteControlHttpError,
   getHealth,
   getHistory,
@@ -23,6 +26,7 @@ import {
   type RemoteControlProject,
   type RemoteHistoryDetail,
   type RemoteHistoryItem,
+  type RemoteHistoryMode,
   type RemoteHistoryStatus,
 } from './lib/remoteControlClient'
 import { loadState, saveState } from './lib/storage'
@@ -82,6 +86,7 @@ type ConsoleSettings = {
   bridge: BridgeConfig
   wrapper: PromptWrapper
   remoteControlUrl: string
+  remoteHistoryMode: RemoteHistoryMode
   selectedProjectId: string
   threadsByProject: Record<string, ConsoleThread[]>
   activeThreadIdsByProject: Record<string, string>
@@ -171,6 +176,7 @@ const defaultConsoleSettings = (): ConsoleSettings => ({
   },
   wrapper: defaultPromptWrapper(),
   remoteControlUrl: DEFAULT_REMOTE_CONTROL_URL,
+  remoteHistoryMode: DEFAULT_REMOTE_HISTORY_MODE,
   selectedProjectId: '',
   threadsByProject: {},
   activeThreadIdsByProject: {},
@@ -212,6 +218,10 @@ const loadConsoleSettings = () => {
         typeof parsed.remoteControlUrl === 'string' && parsed.remoteControlUrl.trim()
           ? parsed.remoteControlUrl
           : fallback.remoteControlUrl,
+      remoteHistoryMode:
+        parsed.remoteHistoryMode === 'server' || parsed.remoteHistoryMode === 'local'
+          ? parsed.remoteHistoryMode
+          : fallback.remoteHistoryMode,
       selectedProjectId:
         typeof parsed.selectedProjectId === 'string'
           ? parsed.selectedProjectId
@@ -403,6 +413,7 @@ function App() {
   const [remoteControlDraftUrl, setRemoteControlDraftUrl] = useState(
     initialConsole.remoteControlUrl,
   )
+  const [remoteHistoryMode, setRemoteHistoryMode] = useState(initialConsole.remoteHistoryMode)
   const [remoteHealth, setRemoteHealth] = useState<RemoteControlHealth | null>(null)
   const [remoteProjects, setRemoteProjects] = useState<RemoteControlProject[]>([])
   const [remoteHistory, setRemoteHistory] = useState<RemoteHistoryItem[]>([])
@@ -472,6 +483,12 @@ function App() {
   const selectedRemoteCommitUrl = selectedRemoteHistory
     ? commitUrlFor(selectedRemoteHistory.repoUrl, selectedRemoteHistory.commitSha)
     : ''
+  const selectedRemoteCodexContextUrl =
+    remoteHistoryMode === 'server' && selectedRemoteHistory?.codexUiHandoff
+      ? `${normalizeRemoteControlUrl(remoteControlUrl)}/api/remote-control/history/${encodeURIComponent(
+          selectedRemoteHistory.requestId,
+        )}/codex-context`
+      : ''
   const remoteHistoryGroups = useMemo(() => {
     const groups = new Map<string, RemoteHistoryItem[]>()
     const sortedHistory = [...remoteHistory].sort(
@@ -515,7 +532,7 @@ function App() {
       setRemoteErrors({ health: '', projects: '', history: '', detail: '' })
 
       try {
-        const health = await getHealth(baseUrl, signal)
+        const health = await getHealth(baseUrl, signal, remoteHistoryMode)
 
         if (signal?.aborted) {
           return
@@ -540,7 +557,7 @@ function App() {
       }
 
       try {
-        const nextProjects = await getProjects(baseUrl, signal)
+        const nextProjects = await getProjects(baseUrl, signal, remoteHistoryMode)
 
         if (!signal?.aborted) {
           setRemoteProjects(nextProjects)
@@ -556,7 +573,7 @@ function App() {
       }
 
       try {
-        const nextHistory = await getHistory(baseUrl, signal)
+        const nextHistory = await getHistory(baseUrl, signal, remoteHistoryMode)
 
         if (!signal?.aborted) {
           setRemoteHistory(nextHistory)
@@ -581,7 +598,7 @@ function App() {
         }
       }
     },
-    [remoteControlUrl],
+    [remoteControlUrl, remoteHistoryMode],
   )
 
   const loadRemoteHistoryDetail = useCallback(
@@ -595,7 +612,12 @@ function App() {
       setRemoteErrors((current) => ({ ...current, detail: '' }))
 
       try {
-        const detail = await getHistoryDetail(requestId, remoteControlUrl, signal)
+        const detail = await getHistoryDetail(
+          requestId,
+          remoteControlUrl,
+          signal,
+          remoteHistoryMode,
+        )
 
         if (!signal?.aborted) {
           setRemoteHistoryDetail(detail)
@@ -617,7 +639,7 @@ function App() {
         }
       }
     },
-    [remoteControlUrl],
+    [remoteControlUrl, remoteHistoryMode],
   )
 
   const handleRemoteRefresh = () => {
@@ -626,6 +648,15 @@ function App() {
     setRemoteControlUrl(nextUrl)
     setRemoteControlDraftUrl(nextUrl)
     void loadRemoteWork(undefined, nextUrl)
+  }
+
+  const handleRemoteHistoryModeChange = (mode: RemoteHistoryMode) => {
+    const nextUrl =
+      mode === 'server' ? DEFAULT_MYBRAIN_API_BASE : DEFAULT_LOCAL_REMOTE_CONTROL_URL
+
+    setRemoteHistoryMode(mode)
+    setRemoteControlUrl(nextUrl)
+    setRemoteControlDraftUrl(nextUrl)
   }
 
   useEffect(() => {
@@ -637,6 +668,7 @@ function App() {
       bridge,
       wrapper,
       remoteControlUrl,
+      remoteHistoryMode,
       selectedProjectId,
       threadsByProject,
       activeThreadIdsByProject,
@@ -651,6 +683,7 @@ function App() {
     messagesByThread,
     queuedPromptsByProject,
     remoteControlUrl,
+    remoteHistoryMode,
     selectedProjectId,
     threadsByProject,
     wrapper,
@@ -1467,14 +1500,32 @@ function App() {
             {remoteLoading ? 'Checking' : remoteHealth?.ok ? 'Connected' : 'Offline'}
           </span>
         </div>
-        <label className="field">
-          <span>RemoteControl URL</span>
-          <input
-            value={remoteControlDraftUrl}
-            onChange={(event) => setRemoteControlDraftUrl(event.target.value)}
-            placeholder={DEFAULT_REMOTE_CONTROL_URL}
-          />
-        </label>
+        <div className="field-grid">
+          <label className="field">
+            <span>History source</span>
+            <select
+              value={remoteHistoryMode}
+              onChange={(event) =>
+                handleRemoteHistoryModeChange(event.target.value as RemoteHistoryMode)
+              }
+            >
+              <option value="server">MyBrain backend</option>
+              <option value="local">Local RemoteControl</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>{remoteHistoryMode === 'server' ? 'MyBrain API base' : 'RemoteControl URL'}</span>
+            <input
+              value={remoteControlDraftUrl}
+              onChange={(event) => setRemoteControlDraftUrl(event.target.value)}
+              placeholder={
+                remoteHistoryMode === 'server'
+                  ? DEFAULT_MYBRAIN_API_BASE
+                  : DEFAULT_LOCAL_REMOTE_CONTROL_URL
+              }
+            />
+          </label>
+        </div>
         <div className="remote-actions">
           <button type="button" className="primary-button" onClick={handleRemoteRefresh}>
             <span aria-hidden="true">↻</span>
@@ -1635,6 +1686,11 @@ function App() {
                         Events
                       </a>
                     ) : null}
+                    {selectedRemoteCodexContextUrl ? (
+                      <a href={selectedRemoteCodexContextUrl} target="_blank" rel="noreferrer">
+                        Handoff
+                      </a>
+                    ) : null}
                   </div>
                   <div className="remote-detail-grid">
                     <span>
@@ -1680,6 +1736,18 @@ function App() {
                     <section className="remote-text-block">
                       <span>Worker prompt</span>
                       <pre>{remoteHistoryDetail.workerPrompt}</pre>
+                    </section>
+                  ) : null}
+                  {selectedRemoteHistory.codexUiHandoff ? (
+                    <section className="remote-text-block">
+                      <span>Codex UI handoff</span>
+                      <pre>{selectedRemoteHistory.codexUiHandoff}</pre>
+                    </section>
+                  ) : null}
+                  {remoteHistoryDetail?.codexEventsJsonl ? (
+                    <section className="remote-text-block">
+                      <span>Codex events JSONL</span>
+                      <pre>{remoteHistoryDetail.codexEventsJsonl}</pre>
                     </section>
                   ) : null}
                   {remoteHistoryDetail?.changedFiles?.length ? (
