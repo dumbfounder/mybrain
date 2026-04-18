@@ -225,10 +225,12 @@ const loadConsoleSettings = () => {
     const parsedBridge = (parsed.bridge ?? {}) as Partial<BridgeConfig>
     const bridge = { ...fallback.bridge, ...parsedBridge }
     const legacy = migrateLegacyThreads(parsed)
-    const remoteHistoryMode =
+    const storedRemoteHistoryMode =
       parsed.remoteHistoryMode === 'server' || parsed.remoteHistoryMode === 'local'
         ? parsed.remoteHistoryMode
         : fallback.remoteHistoryMode
+    const remoteHistoryMode =
+      DEFAULT_REMOTE_HISTORY_MODE === 'server' ? 'server' : storedRemoteHistoryMode
     const remoteControlUrl = remoteUrlForMode(remoteHistoryMode, parsed.remoteControlUrl)
 
     if (!bridge.url.trim() && fallback.bridge.url) {
