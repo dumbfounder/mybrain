@@ -18,12 +18,15 @@ import {
   DEFAULT_REMOTE_HISTORY_MODE,
   RemoteControlHttpError,
   getHealth,
+  getCommands,
   getHistory,
   getHistoryDetail,
   getProjects,
   normalizeRemoteControlUrl,
+  submitRemoteCommand,
   type RemoteControlHealth,
   type RemoteControlProject,
+  type RemoteCommand,
   type RemoteHistoryDetail,
   type RemoteHistoryItem,
   type RemoteHistoryMode,
@@ -445,9 +448,18 @@ function App() {
   const [remoteProjects, setRemoteProjects] = useState<RemoteControlProject[]>([])
   const [remoteHistory, setRemoteHistory] = useState<RemoteHistoryItem[]>([])
   const [remoteHistoryDetail, setRemoteHistoryDetail] = useState<RemoteHistoryDetail | null>(null)
+  const [remoteCommands, setRemoteCommands] = useState<RemoteCommand[]>([])
   const [selectedRemoteRequestId, setSelectedRemoteRequestId] = useState('')
   const [remoteLoading, setRemoteLoading] = useState(false)
   const [remoteDetailLoading, setRemoteDetailLoading] = useState(false)
+  const [remoteCommandBusy, setRemoteCommandBusy] = useState(false)
+  const [remoteCommandToken, setRemoteCommandToken] = useState('')
+  const [remoteCommandDraft, setRemoteCommandDraft] = useState({
+    projectName: 'mybrain',
+    workstreamAlias: 'mybrain-remote-command',
+    promptText: '',
+  })
+  const [remoteCommandStatus, setRemoteCommandStatus] = useState('')
   const [remoteHistoryUnavailable, setRemoteHistoryUnavailable] = useState(false)
   const [remoteLastCheckedAt, setRemoteLastCheckedAt] = useState('')
   const [remoteErrors, setRemoteErrors] = useState({
@@ -455,6 +467,7 @@ function App() {
     projects: '',
     history: '',
     detail: '',
+    command: '',
   })
   const [threadsByProject, setThreadsByProject] = useState(initialConsole.threadsByProject)
   const [activeThreadIdsByProject, setActiveThreadIdsByProject] = useState(
@@ -556,7 +569,7 @@ function App() {
 
       setRemoteLoading(true)
       setRemoteHistoryUnavailable(false)
-      setRemoteErrors({ health: '', projects: '', history: '', detail: '' })
+      setRemoteErrors({ health: '', projects: '', history: '', detail: '', command: '' })
 
       try {
         const health = await getHealth(baseUrl, signal, remoteHistoryMode)
@@ -619,6 +632,18 @@ function App() {
           }
         }
       } finally {
+        try {
+          const nextCommands = await getCommands(baseUrl, signal, remoteHistoryMode)
+
+          if (!signal?.aborted) {
+            setRemoteCommands(nextCommands)
+          }
+        } catch {
+          if (!signal?.aborted) {
+            setRemoteCommands([])
+          }
+        }
+
         if (!signal?.aborted) {
           setRemoteLoading(false)
           setRemoteLastCheckedAt(nowIso())
@@ -686,6 +711,54 @@ function App() {
     setRemoteHistoryMode(mode)
     setRemoteControlUrl(nextUrl)
     setRemoteControlDraftUrl(nextUrl)
+  }
+
+  const handleRemoteCommandSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    const promptText = remoteCommandDraft.promptText.trim()
+    const token = remoteCommandToken.trim()
+
+    if (!promptText) {
+      setRemoteErrors((current) => ({ ...current, command: 'Enter a command for RemoteControl.' }))
+      return
+    }
+
+    if (!token) {
+      setRemoteErrors((current) => ({ ...current, command: 'Enter the remote command token.' }))
+      return
+    }
+
+    const baseUrl = normalizeRemoteControlUrl(remoteControlUrl)
+
+    setRemoteCommandBusy(true)
+    setRemoteCommandStatus('')
+    setRemoteErrors((current) => ({ ...current, command: '' }))
+
+    try {
+      const command = await submitRemoteCommand(
+        {
+          projectName: remoteCommandDraft.projectName.trim() || 'mybrain',
+          workstreamAlias: remoteCommandDraft.workstreamAlias.trim() || 'mybrain-remote-command',
+          promptText,
+        },
+        token,
+        baseUrl,
+        undefined,
+        remoteHistoryMode,
+      )
+
+      setRemoteCommandDraft((current) => ({ ...current, promptText: '' }))
+      setRemoteCommandStatus(`Queued ${command?.commandId ?? 'remote command'} for RemoteControl.`)
+      await loadRemoteWork(undefined, baseUrl)
+    } catch (error) {
+      setRemoteErrors((current) => ({
+        ...current,
+        command: remoteErrorMessage(error),
+      }))
+    } finally {
+      setRemoteCommandBusy(false)
+    }
   }
 
   useEffect(() => {
@@ -1579,6 +1652,121 @@ function App() {
           Private GitHub history should flow through RemoteControl or another backend proxy; this
           static UI does not read GitHub tokens in the browser.
         </p>
+      </section>
+
+      <section className="tab-section">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">Command Intake</p>
+            <h2>Queue remote work</h2>
+          </div>
+          <span className="status-pill">{remoteCommands.length} commands</span>
+        </div>
+        <form className="remote-command-form" onSubmit={handleRemoteCommandSubmit}>
+          <div className="field-grid">
+            <label className="field">
+              <span>Project</span>
+              <input
+                value={remoteCommandDraft.projectName}
+                onChange={(event) =>
+                  setRemoteCommandDraft((current) => ({
+                    ...current,
+                    projectName: event.target.value,
+                  }))
+                }
+                placeholder="mybrain"
+              />
+            </label>
+            <label className="field">
+              <span>Workstream</span>
+              <input
+                value={remoteCommandDraft.workstreamAlias}
+                onChange={(event) =>
+                  setRemoteCommandDraft((current) => ({
+                    ...current,
+                    workstreamAlias: event.target.value,
+                  }))
+                }
+                placeholder="mybrain-remote-command"
+              />
+            </label>
+            <label className="field">
+              <span>Command token</span>
+              <input
+                type="password"
+                value={remoteCommandToken}
+                onChange={(event) => setRemoteCommandToken(event.target.value)}
+                placeholder="Remote command token"
+                autoComplete="off"
+              />
+            </label>
+          </div>
+          <label className="field">
+            <span>Request</span>
+            <textarea
+              value={remoteCommandDraft.promptText}
+              onChange={(event) =>
+                setRemoteCommandDraft((current) => ({
+                  ...current,
+                  promptText: event.target.value,
+                }))
+              }
+              placeholder="Describe the remote work for Codex"
+              rows={5}
+            />
+          </label>
+          <div className="remote-actions">
+            <button
+              type="submit"
+              className="primary-button"
+              disabled={remoteCommandBusy || remoteHistoryMode !== 'server'}
+            >
+              <span aria-hidden="true">↵</span>
+              {remoteCommandBusy ? 'Queueing' : 'Queue command'}
+            </button>
+            {remoteCommandStatus ? <span className="muted">{remoteCommandStatus}</span> : null}
+          </div>
+          {remoteHistoryMode !== 'server' ? (
+            <p className="error-text">Switch history source to MyBrain backend before submitting.</p>
+          ) : null}
+          {remoteErrors.command ? <p className="error-text">{remoteErrors.command}</p> : null}
+        </form>
+        {remoteCommands.length ? (
+          <div className="remote-command-list">
+            {remoteCommands.slice(0, 6).map((command) => {
+              const statusClass =
+                command.status === 'done'
+                  ? 'ok'
+                  : command.status === 'failed'
+                    ? 'failed'
+                    : 'running'
+
+              return (
+                <article key={command.commandId} className="remote-command-row">
+                  <span className={`remote-status remote-status--${statusClass}`}>
+                    {command.status}
+                  </span>
+                  <strong>{excerpt(command.promptText, 112)}</strong>
+                  <small>
+                    {command.projectName}
+                    {command.workstreamAlias ? ` / ${command.workstreamAlias}` : ''}
+                  </small>
+                  <small>
+                    {formatOptionalDate(command.createdAt)}
+                    {command.requestId ? ` -> ${command.requestId}` : ''}
+                  </small>
+                  {command.finalStatus || command.finalSummary ? (
+                    <small>
+                      {command.finalStatus ? `${command.finalStatus}: ` : ''}
+                      {command.finalSummary ? excerpt(command.finalSummary, 120) : ''}
+                    </small>
+                  ) : null}
+                  {command.errorText ? <small>{command.errorText}</small> : null}
+                </article>
+              )
+            })}
+          </div>
+        ) : null}
       </section>
 
       <section className="tab-section">

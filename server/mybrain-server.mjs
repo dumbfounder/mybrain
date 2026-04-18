@@ -12,6 +12,7 @@ const localHistoryRoot = process.env.MYBRAIN_HISTORY_DIR || path.join(repoRoot, 
 const port = Number(process.env.PORT || process.env.MYBRAIN_PORT || 3000)
 const host = process.env.HOST || process.env.MYBRAIN_HOST || '0.0.0.0'
 const ingestToken = process.env.MYBRAIN_REMOTE_CONTROL_TOKEN || ''
+const commandSubmitToken = process.env.MYBRAIN_COMMAND_SUBMIT_TOKEN || ingestToken
 const historyRepo = process.env.MYBRAIN_HISTORY_REPO || ''
 const historyBranch = process.env.MYBRAIN_HISTORY_BRANCH || 'main'
 const githubToken = process.env.GITHUB_TOKEN || ''
@@ -19,6 +20,7 @@ const githubApiBase = 'https://api.github.com'
 
 const globalIndexPath = 'projects/index.jsonl'
 const projectsPath = 'projects/projects.json'
+const commandIndexPath = 'commands/index.jsonl'
 const markdownFields = [
   ['inputPrompt', 'input.md'],
   ['workerPrompt', 'worker-prompt.md'],
@@ -234,6 +236,9 @@ const readBody = (request) =>
 const authorizeIngest = (request) =>
   Boolean(ingestToken && request.headers.authorization === `Bearer ${ingestToken}`)
 
+const authorizeCommandSubmit = (request) =>
+  Boolean(commandSubmitToken && request.headers.authorization === `Bearer ${commandSubmitToken}`)
+
 const artifactPaths = (detail) => {
   const projectName = safePathPart(detail.projectName || 'remote-work')
   const workstream = safePathPart(detail.workstreamAlias || 'default')
@@ -251,6 +256,14 @@ const artifactPaths = (detail) => {
     summary: `${base}/summary.md`,
     codexContext: `${base}/codex-context.md`,
     codexEvents: `${base}/codex-events.jsonl`,
+  }
+}
+
+const commandPaths = (command) => {
+  const commandId = safePathPart(command.commandId)
+
+  return {
+    metadata: `commands/${commandId}/metadata.json`,
   }
 }
 
@@ -308,6 +321,47 @@ const normalizePayload = (raw, requestIdOverride = '') => {
       ...(source.metadata && typeof source.metadata === 'object' ? source.metadata : {}),
       receivedAt: new Date().toISOString(),
     },
+  }
+}
+
+const normalizeCommandPayload = (raw, commandIdOverride = '') => {
+  const source = raw?.command || raw?.item || raw || {}
+  const commandId =
+    commandIdOverride ||
+    source.commandId ||
+    `cmd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  const promptText = source.promptText || source.prompt || source.text || ''
+
+  if (!promptText || typeof promptText !== 'string') {
+    throw new Error('promptText is required.')
+  }
+
+  return {
+    commandId,
+    projectName: source.projectName || 'mybrain',
+    projectPath: source.projectPath || '',
+    workstreamAlias: source.workstreamAlias || 'mybrain-remote-command',
+    codexSessionId: source.codexSessionId || null,
+    sandboxMode: source.sandboxMode || undefined,
+    modelOverride: source.modelOverride || undefined,
+    repoUrl: source.repoUrl ? normalizeRepoUrl(source.repoUrl) : null,
+    deployUrl: source.deployUrl || null,
+    promptText,
+    status: source.status || 'queued',
+    createdAt: source.createdAt || new Date().toISOString(),
+    claimedAt: source.claimedAt || null,
+    claimedBy: source.claimedBy || null,
+    enqueuedAt: source.enqueuedAt || null,
+    completedAt: source.completedAt || null,
+    requestId: source.requestId || null,
+    finalStatus: source.finalStatus || null,
+    finalSummary: source.finalSummary || source.summary || null,
+    errorText: source.errorText || null,
+    metadata: {
+      ...(source.metadata && typeof source.metadata === 'object' ? source.metadata : {}),
+      receivedAt: source.metadata?.receivedAt || new Date().toISOString(),
+    },
+    updatedAt: new Date().toISOString(),
   }
 }
 
@@ -466,6 +520,76 @@ const remoteHistoryStore = {
   },
 }
 
+const remoteCommandStore = {
+  async list() {
+    return sortByCreatedAtDesc(await readStorageJsonl(commandIndexPath))
+  },
+
+  async upsert(command) {
+    const normalized = normalizeCommandPayload(command, command.commandId)
+    const paths = commandPaths(normalized)
+    const commands = sortByCreatedAtDesc(
+      upsertByKey(await readStorageJsonl(commandIndexPath), normalized, 'commandId'),
+    )
+
+    await writeStorageJson(paths.metadata, normalized, `Update MyBrain remote command ${normalized.commandId}`)
+    await writeStorageJsonl(commandIndexPath, commands, 'Update MyBrain remote command index')
+
+    return normalized
+  },
+
+  async submit(payload) {
+    return this.upsert(normalizeCommandPayload(payload))
+  },
+
+  async claimNext(workerId) {
+    const commands = await this.list()
+    const queued = [...commands]
+      .filter((command) => command.status === 'queued')
+      .sort((left, right) => new Date(left.createdAt || 0).getTime() - new Date(right.createdAt || 0).getTime())
+
+    if (!queued.length) {
+      return null
+    }
+
+    const command = {
+      ...queued[0],
+      status: 'claimed',
+      claimedAt: new Date().toISOString(),
+      claimedBy: workerId || 'remotecontrol',
+      updatedAt: new Date().toISOString(),
+    }
+
+    await this.upsert(command)
+
+    return command
+  },
+
+  async updateResult(commandId, payload) {
+    const commands = await this.list()
+    const current = commands.find((command) => command.commandId === commandId)
+
+    if (!current) {
+      return null
+    }
+
+    const status = payload.status || current.status
+    const next = {
+      ...current,
+      ...payload,
+      commandId,
+      status,
+      completedAt:
+        ['done', 'failed'].includes(status) || payload.completed
+          ? payload.completedAt || new Date().toISOString()
+          : current.completedAt,
+      updatedAt: new Date().toISOString(),
+    }
+
+    return this.upsert(next)
+  },
+}
+
 const handleRemoteControlApi = async (request, response, url) => {
   const pathname = url.pathname
 
@@ -486,6 +610,22 @@ const handleRemoteControlApi = async (request, response, url) => {
 
   if (request.method === 'GET' && pathname === '/api/remote-control/history') {
     json(response, 200, { history: await remoteHistoryStore.list() })
+    return
+  }
+
+  if (request.method === 'GET' && pathname === '/api/remote-control/commands') {
+    json(response, 200, { commands: await remoteCommandStore.list() })
+    return
+  }
+
+  if (request.method === 'GET' && pathname === '/api/remote-control/commands/next') {
+    if (!authorizeIngest(request)) {
+      json(response, 401, { error: 'RemoteControl ingest token is missing or incorrect.' })
+      return
+    }
+
+    const command = await remoteCommandStore.claimNext(url.searchParams.get('workerId') || '')
+    json(response, 200, { command })
     return
   }
 
@@ -524,6 +664,17 @@ const handleRemoteControlApi = async (request, response, url) => {
     return
   }
 
+  if (pathname === '/api/remote-control/commands') {
+    if (!authorizeCommandSubmit(request)) {
+      json(response, 401, { error: 'Remote command token is missing or incorrect.' })
+      return
+    }
+
+    const command = await remoteCommandStore.submit(await readBody(request))
+    json(response, 200, { ok: true, commandId: command.commandId, command })
+    return
+  }
+
   if (!authorizeIngest(request)) {
     json(response, 401, { error: 'RemoteControl ingest token is missing or incorrect.' })
     return
@@ -554,6 +705,23 @@ const handleRemoteControlApi = async (request, response, url) => {
       requestId: decodeURIComponent(detailWriteMatch[1]),
     })
     json(response, 200, { ok: true, requestId: detail.requestId })
+    return
+  }
+
+  const commandResultMatch = pathname.match(/^\/api\/remote-control\/commands\/([^/]+)\/result$/)
+
+  if (commandResultMatch) {
+    const command = await remoteCommandStore.updateResult(
+      decodeURIComponent(commandResultMatch[1]),
+      body,
+    )
+
+    if (!command) {
+      json(response, 404, { error: 'Remote command not found.' })
+      return
+    }
+
+    json(response, 200, { ok: true, commandId: command.commandId, command })
     return
   }
 

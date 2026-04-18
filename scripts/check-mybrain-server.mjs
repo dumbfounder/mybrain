@@ -125,6 +125,66 @@ const main = async () => {
       throw new Error('Codex context endpoint did not return handoff markdown.')
     }
 
+    const unauthenticatedCommand = await fetch(`${baseUrl}/api/remote-control/commands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        promptText: 'This should be rejected.',
+      }),
+    })
+
+    if (unauthenticatedCommand.status !== 401) {
+      throw new Error(
+        `Unauthenticated command returned ${unauthenticatedCommand.status}, expected 401.`,
+      )
+    }
+
+    const commandId = 'check-command'
+    const command = await readJson(`${baseUrl}/api/remote-control/commands`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        commandId,
+        projectName: 'mybrain',
+        workstreamAlias: 'check-command',
+        promptText: 'Check the remote command queue.',
+      }),
+    })
+
+    if (!command.response.ok || command.json.commandId !== commandId) {
+      throw new Error('Authenticated command submit failed.')
+    }
+
+    const claimed = await readJson(`${baseUrl}/api/remote-control/commands/next?workerId=check`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+
+    if (claimed.json.command?.commandId !== commandId || claimed.json.command?.status !== 'claimed') {
+      throw new Error('Remote command claim failed.')
+    }
+
+    const result = await readJson(`${baseUrl}/api/remote-control/commands/${commandId}/result`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: 'enqueued',
+        requestId: 'check-request',
+        enqueuedAt: '2026-04-17T00:02:00.000Z',
+      }),
+    })
+
+    if (!result.response.ok || result.json.command?.requestId !== 'check-request') {
+      throw new Error('Remote command result update failed.')
+    }
+
     const app = await fetch(baseUrl)
     const appHtml = await app.text()
 

@@ -59,6 +59,34 @@ export type RemoteHistoryDetail = RemoteHistoryItem & {
 
 export type RemoteHistoryMode = 'local' | 'server'
 
+export type RemoteCommandStatus = 'queued' | 'claimed' | 'enqueued' | 'done' | 'failed'
+
+export type RemoteCommand = {
+  commandId: string
+  projectName: string
+  projectPath?: string
+  workstreamAlias?: string | null
+  promptText: string
+  status: RemoteCommandStatus
+  createdAt: string
+  claimedAt?: string | null
+  claimedBy?: string | null
+  enqueuedAt?: string | null
+  completedAt?: string | null
+  requestId?: string | null
+  finalStatus?: string | null
+  finalSummary?: string | null
+  errorText?: string | null
+}
+
+export type RemoteCommandInput = {
+  projectName: string
+  workstreamAlias: string
+  promptText: string
+  sandboxMode?: string
+  modelOverride?: string
+}
+
 const hostedHistoryMode = () => {
   if (typeof window === 'undefined') {
     return false
@@ -107,9 +135,15 @@ const fetchJson = async <T>(
   path: string,
   mode: RemoteHistoryMode,
   signal?: AbortSignal,
+  init: RequestInit = {},
 ) => {
   const response = await fetch(`${normalizeRemoteControlUrl(baseUrl)}${apiPathFor(mode, path)}`, {
+    ...init,
     signal,
+    headers: {
+      ...(init.body ? { 'content-type': 'application/json' } : {}),
+      ...(init.headers ?? {}),
+    },
   })
 
   if (!response.ok) {
@@ -201,4 +235,32 @@ export const getHistoryDetail = async (
   )
 
   return objectFromResponse<RemoteHistoryDetail>(value, ['detail', 'item', 'request'])
+}
+
+export const getCommands = async (
+  baseUrl = DEFAULT_REMOTE_CONTROL_URL,
+  signal?: AbortSignal,
+  mode = DEFAULT_REMOTE_HISTORY_MODE,
+) => {
+  const value = await fetchJson<unknown>(baseUrl, '/api/commands', mode, signal)
+
+  return arrayFromResponse<RemoteCommand>(value, ['commands', 'items'])
+}
+
+export const submitRemoteCommand = async (
+  command: RemoteCommandInput,
+  token: string,
+  baseUrl = DEFAULT_REMOTE_CONTROL_URL,
+  signal?: AbortSignal,
+  mode = DEFAULT_REMOTE_HISTORY_MODE,
+) => {
+  const value = await fetchJson<unknown>(baseUrl, '/api/commands', mode, signal, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(command),
+  })
+
+  return objectFromResponse<RemoteCommand>(value, ['command', 'item'])
 }

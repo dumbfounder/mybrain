@@ -682,6 +682,27 @@ summary:focus-visible {
   white-space: nowrap;
 }
 
+.remote-command-form,
+.remote-command-list {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.remote-command-form textarea {
+  min-height: 120px;
+}
+
+.remote-command-row {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+
 .remote-project-card,
 .remote-detail-panel,
 .remote-workstream,
@@ -705,6 +726,7 @@ summary:focus-visible {
 }
 
 .remote-project-card small,
+.remote-command-row small,
 .remote-request-row small,
 .remote-detail-heading small {
   color: var(--muted);
@@ -736,6 +758,7 @@ summary:focus-visible {
 }
 
 .remote-request-row strong,
+.remote-command-row strong,
 .remote-request-row span {
   overflow-wrap: anywhere;
 }
