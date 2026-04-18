@@ -74,14 +74,10 @@ export const DEFAULT_REMOTE_HISTORY_MODE: RemoteHistoryMode =
     ? 'server'
     : 'local'
 
-const defaultBrowserOrigin = () =>
-  typeof window !== 'undefined' ? window.location.origin : ''
-
 export const DEFAULT_LOCAL_REMOTE_CONTROL_URL =
   import.meta.env.VITE_REMOTE_CONTROL_URL?.trim() || 'http://127.0.0.1:3187'
 
-export const DEFAULT_MYBRAIN_API_BASE =
-  import.meta.env.VITE_MYBRAIN_API_BASE?.trim() || defaultBrowserOrigin() || '/'
+export const DEFAULT_MYBRAIN_API_BASE = import.meta.env.VITE_MYBRAIN_API_BASE?.trim() || ''
 
 export const DEFAULT_REMOTE_CONTROL_URL =
   DEFAULT_REMOTE_HISTORY_MODE === 'server'

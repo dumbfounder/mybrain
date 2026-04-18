@@ -135,6 +135,32 @@ const defaultBridgeUrl = () => {
   return window.location.origin
 }
 
+const isLocalRemoteControlUrl = (value: string) => {
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    return false
+  }
+
+  try {
+    const url = new URL(trimmed, window.location.origin)
+
+    return ['127.0.0.1', 'localhost', '0.0.0.0', '::1'].includes(url.hostname)
+  } catch {
+    return trimmed.includes('127.0.0.1') || trimmed.includes('localhost')
+  }
+}
+
+const remoteUrlForMode = (mode: RemoteHistoryMode, value = '') => {
+  const trimmed = value.trim()
+
+  if (mode === 'server') {
+    return !trimmed || isLocalRemoteControlUrl(trimmed) ? DEFAULT_MYBRAIN_API_BASE : trimmed
+  }
+
+  return trimmed || DEFAULT_LOCAL_REMOTE_CONTROL_URL
+}
+
 const migrateLegacyThreads = (parsed: StoredConsoleSettings) => {
   const threadsByProject: Record<string, ConsoleThread[]> = {}
   const activeThreadIdsByProject: Record<string, string> = {}
@@ -199,6 +225,11 @@ const loadConsoleSettings = () => {
     const parsedBridge = (parsed.bridge ?? {}) as Partial<BridgeConfig>
     const bridge = { ...fallback.bridge, ...parsedBridge }
     const legacy = migrateLegacyThreads(parsed)
+    const remoteHistoryMode =
+      parsed.remoteHistoryMode === 'server' || parsed.remoteHistoryMode === 'local'
+        ? parsed.remoteHistoryMode
+        : fallback.remoteHistoryMode
+    const remoteControlUrl = remoteUrlForMode(remoteHistoryMode, parsed.remoteControlUrl)
 
     if (!bridge.url.trim() && fallback.bridge.url) {
       bridge.url = fallback.bridge.url
@@ -214,14 +245,8 @@ const loadConsoleSettings = () => {
     return {
       bridge,
       wrapper: { ...fallback.wrapper, ...parsed.wrapper },
-      remoteControlUrl:
-        typeof parsed.remoteControlUrl === 'string' && parsed.remoteControlUrl.trim()
-          ? parsed.remoteControlUrl
-          : fallback.remoteControlUrl,
-      remoteHistoryMode:
-        parsed.remoteHistoryMode === 'server' || parsed.remoteHistoryMode === 'local'
-          ? parsed.remoteHistoryMode
-          : fallback.remoteHistoryMode,
+      remoteControlUrl,
+      remoteHistoryMode,
       selectedProjectId:
         typeof parsed.selectedProjectId === 'string'
           ? parsed.selectedProjectId
@@ -643,7 +668,10 @@ function App() {
   )
 
   const handleRemoteRefresh = () => {
-    const nextUrl = normalizeRemoteControlUrl(remoteControlDraftUrl || DEFAULT_REMOTE_CONTROL_URL)
+    const nextUrl = remoteUrlForMode(
+      remoteHistoryMode,
+      remoteControlDraftUrl || remoteControlUrl || DEFAULT_REMOTE_CONTROL_URL,
+    )
 
     setRemoteControlUrl(nextUrl)
     setRemoteControlDraftUrl(nextUrl)
@@ -651,8 +679,7 @@ function App() {
   }
 
   const handleRemoteHistoryModeChange = (mode: RemoteHistoryMode) => {
-    const nextUrl =
-      mode === 'server' ? DEFAULT_MYBRAIN_API_BASE : DEFAULT_LOCAL_REMOTE_CONTROL_URL
+    const nextUrl = remoteUrlForMode(mode, mode === 'server' ? remoteControlUrl : '')
 
     setRemoteHistoryMode(mode)
     setRemoteControlUrl(nextUrl)
@@ -1514,13 +1541,13 @@ function App() {
             </select>
           </label>
           <label className="field">
-            <span>{remoteHistoryMode === 'server' ? 'MyBrain API base' : 'RemoteControl URL'}</span>
+            <span>{remoteHistoryMode === 'server' ? 'Backend origin' : 'RemoteControl URL'}</span>
             <input
               value={remoteControlDraftUrl}
               onChange={(event) => setRemoteControlDraftUrl(event.target.value)}
               placeholder={
                 remoteHistoryMode === 'server'
-                  ? DEFAULT_MYBRAIN_API_BASE
+                  ? 'Same origin'
                   : DEFAULT_LOCAL_REMOTE_CONTROL_URL
               }
             />
